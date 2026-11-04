@@ -176,6 +176,9 @@
 
   window.CS_BACKEND = { fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
 
+  // The old Whisper model isn't used any more: give its 300 MB back to the phone.
+  if (self.caches) ['transformers-cache', 'caption-studio-v1'].forEach(name => caches.delete(name).catch(() => {}));
+
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').then(async reg => {
       if (self.crossOriginIsolated) return;
