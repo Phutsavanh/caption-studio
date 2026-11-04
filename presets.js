@@ -1,0 +1,23 @@
+/* Built-in caption presets. Each one only lists what differs from DEFAULT_STYLE (render.js). */
+window.BUILTIN_PRESETS = [
+  { id: 'classic99', name: '99TH ຄລາສສິກ', style: { animIn: 'pop', emphColor: '#FF1E1E' } },
+  { id: 'punch', name: 'ແດງ ໝັດ', style: { weight: 900, size: 104, fill: '#FF1E1E', emphColor: '#FFE600', strokeW: 12, stroke: '#FFFFFF', stroke2W: 5, stroke2: '#000000', animIn: 'slam', inDur: 0.2, loop: 'shake', loopAmt: 0.4 } },
+  { id: 'hormozi', name: 'ໄຮໄລທ໌ເຫຼືອງ', style: { weight: 900, size: 92, strokeW: 12, active: 'color', activeColor: '#FFE600', emphColor: '#FFE600', animIn: 'pop', unit: 'word', stagger: 0.05, inDur: 0.16 } },
+  { id: 'activebox', name: 'ກ່ອງແດງຕາມຄຳ', style: { weight: 900, size: 88, strokeW: 8, shadowA: 0.7, active: 'box', activeBox: '#E5141F', emphColor: '#FFE600', boxRadius: 16, boxPadX: 18, boxPadY: 8, animIn: 'pop', inDur: 0.14 } },
+  { id: 'karaoke', name: 'ຂຶ້ນຕາມສຽງ', style: { weight: 800, size: 86, pending: 'hide', animIn: 'pop', inDur: 0.14, active: 'color', activeColor: '#3DFF8B', emphColor: '#3DFF8B' } },
+  { id: 'blackbox', name: 'ກ່ອງດຳ TikTok', style: { weight: 700, size: 70, strokeW: 0, shadowA: 0, box: 'line', boxColor: '#000000', boxA: 0.82, boxRadius: 14, emphColor: '#FFD400', animIn: 'slideUp', animOut: 'fade', inDur: 0.2 } },
+  { id: 'whitebox', name: 'ກ່ອງຂາວ', style: { weight: 800, size: 72, fill: '#111111', strokeW: 0, shadowA: 0.35, box: 'line', boxColor: '#FFFFFF', boxA: 1, boxRadius: 20, emphColor: '#E5141F', animIn: 'stretch', inDur: 0.24 } },
+  { id: 'pill', name: 'ກ່ອງແຍກຄຳ', style: { weight: 800, size: 72, strokeW: 0, shadowA: 0, box: 'word', boxColor: '#2B59FF', boxA: 1, boxRadius: 22, boxPadX: 30, boxPadY: 6, letterSpacing: 2, emphColor: '#FFE600', animIn: 'bounce', unit: 'word', stagger: 0.08, inDur: 0.38 } },
+  { id: 'gold', name: 'ທອງຫຼູຫຼາ', style: { font: 'Noto Sans Lao Looped', weight: 900, size: 92, fillMode: 'gradient', fill: '#FFF3B0', fill2: '#C98A00', stroke: '#3A2500', strokeW: 6, shadowY: 10, shadowBlur: 22, shadowA: 0.8, emphColor: '#FFFFFF', animIn: 'zoomIn', animOut: 'fade', inDur: 0.32 } },
+  { id: 'fire', name: 'ໄຟລຸກ', style: { weight: 900, size: 98, fillMode: 'gradient', fill: '#FFE14D', fill2: '#FF2A00', stroke: '#2A0500', strokeW: 8, glow: '#FF5A00', glowBlur: 26, emphColor: '#FFFFFF', animIn: 'slam', loop: 'pulse', loopAmt: 1.2 } },
+  { id: 'neon', name: 'ນີອອນ', style: { weight: 700, size: 84, fill: '#FFF4FD', strokeW: 3, stroke: '#FF2BD6', glow: '#FF2BD6', glowBlur: 34, shadowA: 0, emphColor: '#7DF9FF', animIn: 'fade', inDur: 0.12, loop: 'flicker' } },
+  { id: 'cartoon3d', name: 'ການຕູນ 3D', style: { weight: 900, size: 98, fill: '#FFD400', stroke: '#111111', strokeW: 10, depth: 16, depthColor: '#111111', depthAngle: 60, shadowA: 0.5, emphColor: '#FF3B30', animIn: 'bounce', unit: 'word', stagger: 0.07, inDur: 0.42, loop: 'wave', loopAmt: 0.5 } },
+  { id: 'sticker', name: 'ສະຕິກເກີ', style: { weight: 900, size: 88, fill: '#E5141F', stroke: '#FFFFFF', strokeW: 22, shadowA: 0.45, shadowY: 8, tilt: -4, emphColor: '#111111', animIn: 'swing', inDur: 0.3 } },
+  { id: 'glitch', name: 'ກລິດຊ໌', style: { weight: 900, size: 92, strokeW: 7, rgbSplit: 5, shadowA: 0, emphColor: '#FFE600', animIn: 'glitch', inDur: 0.3, loop: 'glitch', loopAmt: 1 } },
+  { id: 'typewriter', name: 'ພິມດີດ', style: { font: 'Phetsarath OT', weight: 700, size: 70, strokeW: 0, box: 'block', boxColor: '#000000', boxA: 0.65, boxRadius: 6, shadowA: 0, animIn: 'typewriter', unit: 'word', stagger: 0.12, inDur: 0.02, emphColor: '#FFD400' } },
+  { id: 'cinema', name: 'ໜັງດຣາມ່າ', style: { font: 'Noto Sans Lao Looped', weight: 500, size: 64, letterSpacing: 5, strokeW: 3, shadowA: 0.9, shadowBlur: 20, shadowY: 3, emphColor: '#F4C95D', animIn: 'blurIn', animOut: 'blurOut', inDur: 0.55, outDur: 0.35 } },
+  { id: 'minimal', name: 'ບາງ ຄລີນ', style: { weight: 500, size: 66, strokeW: 3, shadowA: 0.75, shadowBlur: 14, shadowY: 3, emphColor: '#FFD400', animIn: 'fade', animOut: 'fade', inDur: 0.15, outDur: 0.15 } },
+  { id: 'brush', name: 'ພູ່ກັນ', style: { font: 'Lao_Ink_Brush2', weight: 400, size: 104, strokeW: 8, stroke: '#000000', emphColor: '#FF3B30', animIn: 'wipe', inDur: 0.4 } },
+  { id: 'wave', name: 'ຄື້ນ', style: { weight: 800, size: 88, fill: '#7DF9FF', stroke: '#001A33', strokeW: 9, emphColor: '#FFE600', animIn: 'slideUp', unit: 'word', stagger: 0.06, inDur: 0.26, loop: 'wave' } },
+  { id: 'drop', name: 'ຕົກລົງມາ', style: { weight: 900, size: 92, fill: '#FFFFFF', stroke: '#E5141F', strokeW: 12, emphColor: '#FFE600', animIn: 'drop', unit: 'word', stagger: 0.09, inDur: 0.55 } },
+];

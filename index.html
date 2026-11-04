@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="lo">
+<head>
+<meta charset="utf-8">
+<title>Caption Studio — ໃສ່ຟ້ອນອັດຕະໂນມັດ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111317">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">Caption<b>Studio</b></div>
+  <button id="btnOpen" class="primary">ເປີດຄິບ</button>
+  <input id="fileInput" type="file" accept="video/*" class="hidden">
+  <span id="clipName" class="muted"></span>
+  <div class="spacer"></div>
+  <div class="wpc" title="ຂຶ້ນເທື່ອລະຈັກຄຳ">
+    <label>ຂຶ້ນເທື່ອລະ</label>
+    <div class="seg" id="wpc">
+      <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button><button data-n="5">5</button><button data-n="0">ທັງແຖວ</button>
+    </div>
+    <label>ຄຳ</label>
+  </div>
+  <div class="spacer"></div>
+  <button id="btnPhone">📱 ໃຊ້ໃນໂທລະສັບ</button>
+  <button id="btnUndo" title="ຍ້ອນກັບ (Ctrl+Z)">↶</button>
+  <button id="btnExport" class="accent">ສົ່ງອອກ</button>
+</header>
+
+<main>
+  <aside id="left">
+    <h3>ພຣີເຊັດສະໄຕຣ໌</h3>
+    <div id="presets" class="presets"></div>
+    <h3>ພຣີເຊັດຂອງຂ້ອຍ</h3>
+    <div id="myPresets" class="presets"></div>
+    <button id="btnSavePreset" class="wide">+ ບັນທຶກສະໄຕຣ໌ນີ້</button>
+    <div id="presetNameBox" class="row hidden">
+      <input id="presetName" type="text" class="grow" placeholder="ຕັ້ງຊື່ພຣີເຊັດ">
+      <button id="presetOk" class="primary">ບັນທຶກ</button>
+      <button id="presetCancel">✕</button>
+    </div>
+  </aside>
+
+  <section id="center">
+    <div id="stageWrap">
+      <div id="stage">
+        <video id="video" playsinline preload="auto"></video>
+        <canvas id="canvas"></canvas>
+        <div id="dropHint" class="dropHint hidden">ວາງຄິບໃສ່ທີ່ນີ້</div>
+      </div>
+    </div>
+    <div class="transport">
+      <button id="btnPlay" title="ຫຼິ້ນ / ຢຸດ (Space)">▶</button>
+      <input id="scrub" type="range" min="0" max="1000" value="0">
+      <span id="time" class="mono">0:00.0</span>
+    </div>
+    <div class="posbar">
+      <label>ບ່ອນວາງ</label>
+      <div class="seg" id="posSeg">
+        <button data-y="0.21">ເທິງ</button><button data-y="0.5">ກາງ</button><button data-y="0.7">ລຸ່ມ</button>
+      </div>
+      <label class="check"><input type="checkbox" id="dragOne"> ຍ້າຍສະເພາະປະໂຫຍກນີ້</label>
+      <label class="check"><input type="checkbox" id="safe" checked> ເຂດ TikTok</label>
+      <span class="muted small">ລາກຟ້ອນໃນຄິບເພື່ອຍ້າຍ · ລາກມຸມຂວາລຸ່ມເພື່ອຂະຫຍາຍ</span>
+    </div>
+  </section>
+
+  <aside id="right">
+    <div class="tabs" id="tabs">
+      <button data-tab="style" class="mobileOnly">ສະໄຕຣ໌</button>
+      <button data-tab="text" class="on">ຂໍ້ຄວາມ</button>
+      <button data-tab="decor">ຕົບແຕ່ງ</button>
+      <button data-tab="anim">ລູກຫຼິ້ນ</button>
+    </div>
+
+    <div class="tab" id="tab-text">
+      <div class="card">
+        <label class="lbl">ສະຄຣິບລາວ <span class="muted small">(ບໍ່ບັງຄັບ ແຕ່ຖ້າມີ ຈະສະກົດຖືກ 100%)</span></label>
+        <textarea id="script" rows="4" placeholder="ວາງສະຄຣິບຢູ່ນີ້ ໂປຣແກຣມຈະຈັບເວລາໃຫ້ກົງກັບສຽງເອງ&#10;ຖ້າບໍ່ມີ ກໍກົດໄດ້ເລີຍ ຈະຟັງສຽງແລ້ວຮ່າງຄຳໃຫ້"></textarea>
+        <div class="row">
+          <button id="btnAuto" class="primary grow">ໃສ່ຟ້ອນອັດຕະໂນມັດ</button>
+          <button id="btnManual" title="ແບ່ງເວລາຕາມຄວາມຍາວຂໍ້ຄວາມ ໂດຍບໍ່ຟັງສຽງ">ບໍ່ຟັງສຽງ</button>
+        </div>
+        <p class="staticOnly small muted">ຄັ້ງທຳອິດຈະໂຫຼດຕົວຟັງສຽງປະມານ 240–310 MB ແນະນຳໃຫ້ໃຊ້ Wi-Fi. ຫຼັງຈາກນັ້ນບໍ່ຕ້ອງໂຫຼດອີກ.</p>
+        <div id="jobBox" class="hidden">
+          <div class="bar"><i id="jobBar"></i></div>
+          <div class="row"><span id="jobText" class="small muted grow"></span><button id="jobCancel" class="tiny">ຍົກເລີກ</button></div>
+        </div>
+        <div id="notice" class="notice hidden"></div>
+      </div>
+      <div class="card row wrap">
+        <label class="lbl">ວິທີນັບຄຳ</label>
+        <div class="seg" id="countMode">
+          <button data-m="auto">ຄຳລາວອັດຕະໂນມັດ</button><button data-m="space">ຕາມຍະຫວ່າງທີ່ພິມ</button>
+        </div>
+        <label class="lbl" title="ຖ້າຟ້ອນຂຶ້ນກ່ອນສຽງ ໃຫ້ເພີ່ມ, ຖ້າຂຶ້ນຫຼັງສຽງ ໃຫ້ຫຼຸດ">ຊິບເວລາທັງໝົດ <b id="offsetVal" class="mono">0.00s</b></label>
+        <input id="offset" type="range" min="-1.5" max="1.5" step="0.02" value="0">
+      </div>
+      <div id="chunkList" class="chunks"></div>
+    </div>
+
+    <div class="tab hidden" id="tab-style"></div>
+    <div class="tab hidden" id="tab-decor"></div>
+    <div class="tab hidden" id="tab-anim"></div>
+  </aside>
+</main>
+
+<div id="exportModal" class="modal hidden">
+  <div class="dialog">
+    <h2>ສົ່ງອອກ</h2>
+    <div id="exportError" class="notice bad hidden"></div>
+    <div id="exportChoices">
+      <button class="choice" data-mode="burn"><b>ວິດີໂອ MP4 ພ້ອມຟ້ອນ</b><span>ຝັງຟ້ອນໃສ່ຄິບ ພ້ອມໂພສ ສຽງເດີມບໍ່ປ່ຽນ. ເປີດໜ້າຈໍຄ້າງໄວ້ຈົນແລ້ວ</span></button>
+      <button class="choice" data-mode="overlay"><b>ຊັ້ນຟ້ອນໂປ່ງໃສ MOV</b><span>ເອົາໄປວາງທັບຄິບໃນ CapCut (ໄຟລ໌ໃຫຍ່)</span></button>
+      <button class="choice" data-mode="srt"><b>ໄຟລ໌ SRT</b><span>ຂໍ້ຄວາມ + ເວລາເທົ່ານັ້ນ ບໍ່ມີລູກຫຼິ້ນ</span></button>
+      <div class="row"><label class="lbl">ຄວາມລື່ນຂອງລູກຫຼິ້ນ</label>
+        <div class="seg" id="fpsSeg"><button data-fps="30" class="on">30 fps</button><button data-fps="60">60 fps</button></div></div>
+      <div id="exportFiles" class="files hidden"></div>
+      <button id="exportClose" class="wide">ປິດ</button>
+    </div>
+    <div id="exportRun" class="hidden">
+      <div class="bar"><i id="exportBar"></i></div>
+      <div class="row"><span id="exportText" class="small muted grow"></span><button id="exportCancel" class="tiny">ຍົກເລີກ</button></div>
+    </div>
+    <div id="exportDone" class="hidden">
+      <p id="exportResult"></p>
+      <div class="row">
+        <a id="exportDownload" class="linkbtn primary grow">ດາວໂຫຼດ</a>
+        <button id="exportShare" class="grow hidden">ແຊຣ໌ / ບັນທຶກລົງຄັງພາບ</button>
+        <button id="exportReveal" class="grow">ເປີດໂຟນເດີ</button>
+        <button id="exportBack">ປິດ</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="phoneModal" class="modal hidden">
+  <div class="dialog">
+    <h2>📱 ໃຊ້ໃນໂທລະສັບ</h2>
+    <p class="small muted">ເອົາກ້ອງໂທລະສັບສະແກນ QR ຄັ້ງດຽວ. ຄອມຕ້ອງເປີດໂປຣແກຣມນີ້ໄວ້ ເພາະຄອມເປັນຕົວຟັງສຽງ ແລະ ສົ່ງອອກວິດີໂອ.</p>
+    <div id="phoneLinks" class="qrs"></div>
+    <p class="small muted">ຖ້າສະແກນແລ້ວເຂົ້າບໍ່ໄດ້ ໃຫ້ເບິ່ງວ່າ Windows ຖາມເລື່ອງ Firewall ບໍ່ ແລ້ວກົດອະນຸຍາດ. ໃນ Chrome ຂອງໂທລະສັບ ກົດ ⋮ → "ເພີ່ມໃສ່ໜ້າຈໍຫຼັກ" ເພື່ອໃຫ້ມີໄອຄອນ.</p>
+    <div class="row">
+      <button id="phoneReset" title="ໂທລະສັບເຄື່ອງເກົ່າຈະຕ້ອງສະແກນໃໝ່">ປ່ຽນລິ້ງໃໝ່</button>
+      <button id="phoneClose" class="primary grow">ປິດ</button>
+    </div>
+  </div>
+</div>
+
+<script src="render.js"></script>
+<script src="presets.js"></script>
+<script src="lao-align.js"></script>
+<script src="static-backend.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

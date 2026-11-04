@@ -1,0 +1,2 @@
+Noto Sans Lao and Noto Sans Lao Looped: SIL Open Font License 1.1, see fonts/OFL.txt.
+mediabunny.min.mjs: Mediabunny, Mozilla Public License 2.0, source at https://github.com/Vanilagy/mediabunny
