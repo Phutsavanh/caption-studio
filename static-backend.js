@@ -177,14 +177,17 @@
   window.CS_BACKEND = { fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
 
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').then(reg => {
-      // The first visit isn't controlled yet: reload once so the speech model can use all CPU cores.
-      if (!self.crossOriginIsolated && !sessionStorage.getItem('cs.isolating')) {
-        sessionStorage.setItem('cs.isolating', '1');
-        if (navigator.serviceWorker.controller) location.reload();
-        else navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
-      }
-      return reg;
+    navigator.serviceWorker.register('sw.js').then(async reg => {
+      if (self.crossOriginIsolated) return;
+      // Not isolated yet (first visit, or an older helper was in charge): once the new one is active, reload so
+      // the speech model can use all CPU cores. Two tries at most, so it can never loop.
+      const tries = Number(sessionStorage.getItem('cs.isolating') || 0);
+      if (tries >= 2) return;
+      const pending = reg.installing || reg.waiting;
+      if (pending) await new Promise(ok => pending.addEventListener('statechange', () => { if (pending.state === 'activated') ok(); }));
+      if (!navigator.serviceWorker.controller) await new Promise(ok => navigator.serviceWorker.addEventListener('controllerchange', ok, { once: true }));
+      sessionStorage.setItem('cs.isolating', String(tries + 1));
+      location.reload();
     }).catch(() => {});
   }
 })();
