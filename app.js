@@ -794,6 +794,7 @@ document.addEventListener('drop', async e => {
   $('dropHint').classList.add('hidden');
   const f = e.dataTransfer.files[0];
   if (!f) return;
+  if (/\.(srt|vtt)$/i.test(f.name)) { importSrt(f).catch(err => setNotice(err.message, 'bad')); return; }
   try { await loadVideo(B ? await B.openFile(f) : await uploadFile(f), f); } catch (err) { setNotice(err.message, 'bad'); }
 });
 $('fileInput').addEventListener('change', async e => {
@@ -835,6 +836,47 @@ async function listenOnDevice() {
       $('jobText').textContent = /MB$/.test(label) ? label : `${label} ${Math.round(p * 100)}%`;
     }).then(r => { if (!cancelled) ok(r); }, e => { if (!cancelled) no(e); });
   }).finally(() => box.classList.add('hidden'));
+}
+// ---------- Opening an .srt file: its text and timing are used as they are ----------
+function parseSrt(text) {
+  const time = v => { const m = /(\d+):(\d\d):(\d\d)[,.](\d{1,3})|(\d+):(\d\d)[,.](\d{1,3})/.exec(v); if (!m) return null; return m[1] !== undefined ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(`0.${m[4]}`) : Number(m[5]) * 60 + Number(m[6]) + Number(`0.${m[7]}`); };
+  const out = [];
+  for (const block of text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split(/\n\s*\n/)) {
+    const rows = block.split('\n').map(x => x.trim()).filter(Boolean);
+    const at = rows.findIndex(r => r.includes('-->'));
+    if (at < 0) continue;
+    const [a, b] = rows[at].split('-->');
+    const start = time(a), end = time(b);
+    const body = rows.slice(at + 1).join(' ').replace(/<[^>]+>|\{[^}]*\}/g, '').replace(/\s+/g, ' ').trim();
+    if (start != null && end != null && end > start && body) out.push({ start, end, text: body });
+  }
+  return out.sort((x, y) => x.start - y.start);
+}
+async function decodeTextFile(file) {
+  const buf = await file.arrayBuffer(), b = new Uint8Array(buf);
+  if (b[0] === 0xFF && b[1] === 0xFE) return new TextDecoder('utf-16le').decode(buf);
+  if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(buf);
+  return new TextDecoder('utf-8').decode(buf);
+}
+async function importSrt(file) {
+  const entries = parseSrt(await decodeTextFile(file));
+  if (!entries.length) { setNotice('ອ່ານໄຟລ໌ນີ້ບໍ່ໄດ້ ຫຼື ບໍ່ມີຂໍ້ຄວາມ ກະລຸນາກວດວ່າເປັນໄຟລ໌ .srt', 'bad'); return; }
+  const words = [];
+  entries.forEach((e, k) => {
+    const ws = wordsFromLine({ text: e.text, times: [[0, e.start], [e.text.length, e.end]] }, k, S.countMode, e.end);
+    if (ws.length) ws[ws.length - 1].end = e.end;
+    words.push(...ws);
+  });
+  S.words = words;
+  S.draft = false;
+  S.script = entries.map(e => e.text).join('\n');
+  $('script').value = S.script;
+  rebuild();
+  showTab('text');
+  const last = entries[entries.length - 1].end;
+  if (S.video && last > duration() + 0.5) setNotice(`⚠ ເປີດ ${entries.length} ແຖວແລ້ວ ແຕ່ເວລາໃນໄຟລ໌ຍາວກວ່າຄິບ (${fmt(last)} ກັບ ${fmt(duration())}) ອາດບໍ່ແມ່ນຄູ່ກັນ`);
+  else setNotice(`✓ ເປີດ ${file.name} ແລ້ວ: ${entries.length} ແຖວ ໃຊ້ເວລາຕາມໄຟລ໌`, 'good');
+  commit();
 }
 function manualCaption() {
   S.script = $('script').value;
@@ -1005,6 +1047,12 @@ $('btnPlay').onclick = togglePlay;
 $('btnUndo').onclick = undo;
 $('btnAuto').onclick = autoCaption;
 $('btnManual').onclick = manualCaption;
+$('btnSrt').onclick = () => $('srtInput').click();
+$('srtInput').addEventListener('change', e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) importSrt(f).catch(err => setNotice(err.message, 'bad'));
+});
 $('btnSavePreset').onclick = askPresetName;
 $('presetOk').onclick = savePreset;
 $('presetCancel').onclick = closePresetName;
