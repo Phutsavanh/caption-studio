@@ -89,19 +89,18 @@
     const audio = await extractPcm(video.file, p => onStatus('ກຳລັງແຍກສຽງ', p));
     return new Promise((ok, no) => {
       cancelTranscribe();
-      worker = new Worker('whisper-worker.js', { type: 'module' });
+      worker = new Worker('ctc-worker.js', { type: 'module' });
       worker.onerror = e => { cancelTranscribe(); no(new Error(`ເປີດຕົວຟັງສຽງບໍ່ໄດ້ ກະລຸນາກວດເນັດ (${e.message || 'worker'})`)); };
       worker.onmessage = ({ data }) => {
         if (data.type === 'download') onStatus(`ໂຫຼດຕົວຟັງສຽງ (ຄັ້ງທຳອິດເທົ່ານັ້ນ) ${(data.loaded / 1048576).toFixed(0)}/${(data.total / 1048576).toFixed(0)} MB`, data.loaded / data.total);
-        else if (data.type === 'ready') onStatus('ກຳລັງຟັງສຽງ', 0);
+        else if (data.type === 'ready') { console.log('speech threads:', data.threads); onStatus('ກຳລັງຟັງສຽງ', 0); }
         else if (data.type === 'progress') onStatus('ກຳລັງຟັງສຽງ', data.p);
         else if (data.type === 'done') {
           cancelTranscribe();
-          console.log('whisper device:', data.device);
-          ok(window.LaoAlign.buildResult(script || '', data.words, data.segs, video.duration));
+          ok(window.LaoAlign.buildResultFromChars(script || '', data.chars, video.duration));
         } else if (data.type === 'error') { cancelTranscribe(); no(new Error(`ຟັງສຽງບໍ່ສຳເລັດ ກະລຸນາກວດເນັດແລ້ວລອງໃໝ່ (${data.error})`)); }
       };
-      worker.postMessage({ audio, force: window.CS_FORCE_DEVICE }, [audio.buffer]);
+      worker.postMessage({ audio, base: new URL('./', location.href).href }, [audio.buffer]);
     });
   }
 
@@ -177,5 +176,15 @@
 
   window.CS_BACKEND = { fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      // The first visit isn't controlled yet: reload once so the speech model can use all CPU cores.
+      if (!self.crossOriginIsolated && !sessionStorage.getItem('cs.isolating')) {
+        sessionStorage.setItem('cs.isolating', '1');
+        if (navigator.serviceWorker.controller) location.reload();
+        else navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+      }
+      return reg;
+    }).catch(() => {});
+  }
 })();

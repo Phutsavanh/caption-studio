@@ -119,5 +119,53 @@
     return { draft: true, duration, lines: out };
   }
 
-  root.LaoAlign = { alignChars, thai2lao, buildResult, skel, lao2thai };
+  /** Result built from the Lao model's letters: [{c, t}]. With a script only the timing is used. */
+  function buildResultFromChars(script, chars, duration) {
+    const lines = script.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length) {
+      const words = [];
+      chars.forEach((x, i) => {
+        if (x.c === ' ') return;
+        const next = chars[i + 1];
+        words.push({ w: lao2thai(x.c), s: x.t, e: next ? Math.max(x.t + 0.02, next.t) : x.t + 0.08 });
+      });
+      const perLine = alignChars(lines, words);
+      return {
+        draft: false,
+        duration,
+        lines: lines.map((text, i) => ({ text, times: perLine[i], anchored: perLine[i].length >= Math.max(1, Math.floor(skel(lao2thai(text)).length / 3)) })),
+      };
+    }
+    // No script: the model's own text. Lines break at real pauses, and long phrases only between whole words.
+    const phrases = [[]];
+    let lastT = null;
+    for (const x of chars) {
+      if (lastT != null && x.t - lastT > 0.45 && phrases[phrases.length - 1].length) phrases.push([]);
+      if (x.c !== ' ') lastT = x.t;
+      phrases[phrases.length - 1].push(x);
+    }
+    const segmenter = new Intl.Segmenter('lo', { granularity: 'word' });
+    const out = [];
+    const emit = list => {
+      // A line can't begin with a space or with a vowel or tone mark that has lost its letter.
+      while (list.length && /^[\sັິ-ຼ່-ໍ]/.test(list[0].c)) list.shift();
+      while (list.length && list[list.length - 1].c === ' ') list.pop();
+      if (!list.length) return;
+      const times = [];
+      list.forEach((x, i) => { if (x.c !== ' ') times.push([i, Math.round(x.t * 1000) / 1000]); });
+      out.push({ text: list.map(x => x.c).join(''), times, anchored: true });
+    };
+    for (const phrase of phrases) {
+      const text = phrase.map(x => x.c).join('');
+      let from = 0;
+      for (const seg of segmenter.segment(text)) {
+        const end = seg.index + seg.segment.length;
+        if (end - from >= 45 && end < text.length) { emit(phrase.slice(from, end)); from = end; }
+      }
+      emit(phrase.slice(from));
+    }
+    return { draft: true, duration, lines: out };
+  }
+
+  root.LaoAlign = { alignChars, thai2lao, buildResult, buildResultFromChars, skel, lao2thai };
 })(typeof self !== 'undefined' ? self : window);

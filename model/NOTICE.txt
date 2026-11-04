@@ -1,0 +1,4 @@
+Speech model: SiangLao/xlsr-53-lao-asr (https://huggingface.co/SiangLao/xlsr-53-lao-asr), Apache License 2.0.
+Authors named on its card: Souphaxay Naovalath, Sounmy Chanthavong; advisor Dr. Somsack Inthasone, National University of Laos.
+Base model: facebook/wav2vec2-large-xlsr-53, Apache License 2.0.
+Converted to ONNX and quantized (8-bit) for use in the browser. Licence text: https://www.apache.org/licenses/LICENSE-2.0
