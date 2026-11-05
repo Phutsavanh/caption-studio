@@ -313,6 +313,7 @@
   function select(kind, id) { ui.selected = id ? { kind, id } : null; render(); renderInspector(); if (id) showTab('clip'); }
   const selectedItem = () => {
     if (!ui.selected) return null;
+    if (ui.selected.kind === 'cap') return S.chunks[Number(ui.selected.id.slice(1))] || null;
     const list = ui.selected.kind === 'clip' ? T.clips : ui.selected.kind === 'overlay' ? T.overlays : T.audio;
     return list.find(x => x.id === ui.selected.id) || null;
   };
@@ -324,7 +325,7 @@
     b.dataset.kind = kind; b.dataset.id = item.id;
     const m = media.get(item.m);
     if (m && m.thumb && kind !== 'audio') b.style.backgroundImage = `url(${m.thumb})`;
-    if (!m || !m.file) b.classList.add('missing');
+    if (kind !== 'cap' && (!m || !m.file)) b.classList.add('missing');
     const name = document.createElement('span'); name.textContent = label; b.appendChild(name);
     if (sel) {
       const l = document.createElement('i'); l.className = 'h l'; l.dataset.edge = 'l';
@@ -355,10 +356,9 @@
     });
     T.overlays.forEach(o => block('overlay', o, o.start * pps, o.dur * pps, (media.get(o.m) || {}).name || '?', to));
     T.audio.forEach(a => block('audio', a, a.start * pps, (a.out - a.in) * pps, `${a.kind === 'voice' ? '🎙' : '🎵'} ${a.name || ''}`, ta));
-    S.chunks.forEach(c => {
-      const d = document.createElement('div');
-      d.className = 'tlcap'; d.style.left = `${c.start * pps}px`; d.style.width = `${Math.max(2, (c.end - c.start) * pps - 1)}px`;
-      d.title = c.text; tc.appendChild(d);
+    S.chunks.forEach((c, i) => {
+      const b = block('cap', { id: `c${i}` }, (c.start + S.offset) * pps, (c.end - c.start) * pps - 1, c.text, tc);
+      b.title = c.text;
     });
     const hasStuff = T.clips.length + T.audio.length > 0;
     ['tlSplit', 'tlDelete', 'tlDup'].forEach(id => { el(id).disabled = !hasStuff; });
@@ -404,6 +404,12 @@
     const sel = selectedItem();
     if (!sel) { setNotice('ກົດເລືອກຄິບກ່ອນ'); return; }
     const kind = ui.selected.kind;
+    if (kind === 'cap') {
+      S.words = S.words.filter(w => !sel.words.includes(w));
+      ui.selected = null;
+      rebuild(); render(); renderInspector(); commit();
+      return;
+    }
     edit(() => {
       if (kind === 'clip') T.clips.splice(T.clips.indexOf(sel), 1);
       else if (kind === 'overlay') T.overlays.splice(T.overlays.indexOf(sel), 1);
@@ -414,6 +420,7 @@
   function duplicate() {
     const sel = selectedItem();
     if (!sel) { setNotice('ກົດເລືອກຄິບກ່ອນ'); return; }
+    if (ui.selected.kind === 'cap') return;
     edit(() => {
       const b = { ...sel, id: uid() };
       if (ui.selected.kind === 'clip') T.clips.splice(T.clips.indexOf(sel) + 1, 0, b);
@@ -428,15 +435,93 @@
     const b = e.target.closest('.tlb');
     if (!b) return;
     const id = b.dataset.id, kind = b.dataset.kind;
-    if (!ui.selected || ui.selected.id !== id) { select(kind, id); return; }
+    if (!ui.selected || ui.selected.id !== id) {
+      select(kind, id);
+      if (kind === 'cap') { const c = selectedItem(); if (c) { S.selected = c.idx; TL.seek(c.start + S.offset + 0.001); renderChunkList(); } }
+      return;
+    }
     const item = selectedItem();
+    if (kind === 'cap') {
+      startCaptionDrag(item, handle ? handle.dataset.edge : null, e);
+      return;
+    }
     ui.drag = { kind, item, edge: handle ? handle.dataset.edge : null, x0: e.clientX, snap: JSON.parse(JSON.stringify(item)), moved: false, before: layout() };
-    e.target.setPointerCapture(e.pointerId);
+    // On the stable parent: the blocks get redrawn during a drag, which would otherwise end a touch drag.
+    el('tlInner').setPointerCapture(e.pointerId);
     e.preventDefault();
+  }
+  // ---- Captions: move a whole caption or drag its ends. Captions usually touch, so the neighbour gives way:
+  // it shrinks or grows at the shared edge, down to a short minimum, and never overlaps. ----
+  const MIN_CAP = 0.15;
+  const snapWords = list => list.map(w => ({ w, start: w.start, end: w.end }));
+  function placeCaption(words, a0, b0, a, b, pin) {
+    const k = (b - a) / Math.max(0.01, b0 - a0);
+    for (const s of words) {
+      s.w.start = a + (s.start - a0) * k;
+      s.w.end = a + (s.end - a0) * k;
+    }
+    const last = words[words.length - 1].w;
+    last.end = b;
+    if (pin) last.fixedEnd = true;
+  }
+  function captionState(c) {
+    const i = c.idx, prev = S.chunks[i - 1], next = S.chunks[i + 1];
+    // Keep the caption boundaries as they are while their times change.
+    if (prev) prev.words[prev.words.length - 1].brk = true;
+    c.words[c.words.length - 1].brk = true;
+    return {
+      words: snapWords(c.words), a0: c.start, b0: c.end,
+      prev: prev && { words: snapWords(prev.words), a: prev.start, b: prev.end },
+      next: next && { words: snapWords(next.words), a: next.start, b: next.end },
+      after: S.chunks.slice(i + 2).flatMap(x => snapWords(x.words)),
+    };
+  }
+  function moveCaptionTo(st, a, b, ripple) {
+    placeCaption(st.words, st.a0, st.b0, a, b, true);
+    if (st.prev) placeCaption(st.prev.words, st.prev.a, st.prev.b, st.prev.a, Math.min(st.prev.b, a));
+    const shift = b - st.b0;
+    if (st.next) {
+      if (ripple) placeCaption(st.next.words, st.next.a, st.next.b, st.next.a + shift, st.next.b + shift);
+      else placeCaption(st.next.words, st.next.a, st.next.b, Math.max(st.next.a, b), st.next.b);
+    }
+    if (ripple) for (const w of st.after) { w.w.start = w.start + shift; w.w.end = w.end + shift; }
+    else for (const w of st.after) { w.w.start = w.start; w.w.end = w.end; }
+    rebuild();
+  }
+  const leftLimit = st => (st.prev ? st.prev.a + MIN_CAP : 0);
+  const rightLimit = (st, ripple) => (ripple || !st.next ? Infinity : st.next.b - MIN_CAP);
+  function startCaptionDrag(c, edge, e) {
+    ui.drag = { kind: 'cap', edge, x0: e.clientX, moved: false, st: captionState(c) };
+    suspendList = true;
+    el('tlInner').setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+  function moveCaption(d, dt) {
+    const ripple = !!ui.capRipple, st = d.st;
+    let a = st.a0, b = st.b0;
+    if (d.edge === 'l') a = clamp(st.a0 + dt, leftLimit(st), st.b0 - MIN_CAP);
+    else if (d.edge === 'r') b = clamp(st.b0 + dt, st.a0 + MIN_CAP, rightLimit(st, ripple));
+    else {
+      const shift = clamp(dt, leftLimit(st) - st.a0, rightLimit(st, ripple) - st.b0);
+      a = st.a0 + shift; b = st.b0 + shift;
+    }
+    moveCaptionTo(st, a, b, ripple);
+  }
+  function nudgeCaption(c, delta) {
+    const ripple = !!ui.capRipple, st = captionState(c);
+    const shift = clamp(delta, leftLimit(st) - st.a0, rightLimit(st, ripple) - st.b0);
+    moveCaptionTo(st, st.a0 + shift, st.b0 + shift, ripple);
+    TL.seek(st.a0 + shift + S.offset + 0.001);
+    commit();
   }
   function pointerMove(e) {
     const d = ui.drag;
     if (!d) return;
+    if (d.kind === 'cap') {
+      if (Math.abs(e.clientX - d.x0) > 3) d.moved = true;
+      if (d.moved) moveCaption(d, (e.clientX - d.x0) / ui.pps);
+      return;
+    }
     const dt = (e.clientX - d.x0) / ui.pps;
     if (Math.abs(e.clientX - d.x0) > 4) d.moved = true;
     if (!d.moved) return;
@@ -465,6 +550,13 @@
   function pointerUp() {
     const d = ui.drag;
     ui.drag = null;
+    if (d && d.kind === 'cap') {
+      suspendList = false;
+      rebuild();
+      renderInspector();
+      if (d.moved) { TL.seek(S.chunks[Number(ui.selected.id.slice(1))].start + S.offset + 0.001); commit(); }
+      return;
+    }
     if (!d || !d.moved) return;
     if (d.kind === 'clip') { remapCaptions(d.before, layout()); }
     syncVideo(); render(); renderInspector(); commit();
@@ -542,7 +634,24 @@
     const sel = selectedItem();
     if (!sel) { projectGroup(); return; }
     const kind = ui.selected.kind;
-    if (kind === 'clip') {
+    if (kind === 'cap') {
+      const g = document.createElement('div'); g.className = 'group';
+      const h = document.createElement('h4'); h.textContent = 'ຟ້ອນ: ' + sel.text; g.appendChild(h);
+      const t = document.createElement('p'); t.className = 'small muted'; t.textContent = `${sel.start.toFixed(2)} – ${sel.end.toFixed(2)} ວິ. ລາກແຖບແດງເພື່ອຍ້າຍ, ລາກຂອບເຫຼືອງເພື່ອຍືດ-ຫົດ.`; g.appendChild(t);
+      const row = document.createElement('div'); row.className = 'row wrap';
+      [[-0.5, '−0.5'], [-0.1, '−0.1'], [0.1, '+0.1'], [0.5, '+0.5']].forEach(([v, l]) => {
+        const b = document.createElement('button'); b.className = 'grow'; b.textContent = `${l} ວິ`;
+        b.onclick = () => { const c = selectedItem(); if (c) { nudgeCaption(c, v); renderInspector(); } };
+        row.appendChild(b);
+      });
+      g.appendChild(row);
+      const lab = document.createElement('label'); lab.className = 'check small'; lab.style.marginTop = '8px';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'capRipple'; cb.checked = !!ui.capRipple;
+      cb.onchange = () => { ui.capRipple = cb.checked; };
+      lab.append(cb, document.createTextNode(' ເລື່ອນຄຳທັງໝົດທີ່ຕາມຫຼັງໄປນຳ'));
+      g.appendChild(lab);
+      host.appendChild(g);
+    } else if (kind === 'clip') {
       group(host, 'ຄວາມໄວ ແລະ ສຽງ',
         slider('ຄວາມໄວ', 0.25, 4, 0.05, () => sel.speed, v => { sel.speed = v; }, { structural: true }),
         choice('ສຽງຄິບ', [[false, 'ເປີດ'], [true, 'ປິດ']], () => sel.muted, v => { sel.muted = v; }),

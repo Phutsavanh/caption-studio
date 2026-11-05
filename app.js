@@ -135,6 +135,7 @@ function retokenize() {
   S.words.forEach(w => { const m = old.find(o => o.text === w.text && Math.abs(o.start - w.start) < 0.3); if (m) { w.emph = m.emph; w.pos = m.pos; } });
 }
 
+let suspendList = false; // true while a caption is being dragged on the timeline
 // ---------- Captions from words ----------
 function rebuild() {
   const n = S.n > 0 ? S.n : Infinity;
@@ -164,11 +165,11 @@ function rebuild() {
   // No gaps that flicker and no overlaps between neighbours.
   for (let i = 0; i + 1 < chunks.length; i++) {
     const gap = chunks[i + 1].start - chunks[i].end;
-    if (gap < 0.3) chunks[i].end = chunks[i + 1].start;
+    if (gap < 0 || (gap < 0.3 && !chunks[i].words[chunks[i].words.length - 1].fixedEnd)) chunks[i].end = chunks[i + 1].start;
   }
   S.chunks = chunks;
   S.selected = Math.min(S.selected, Math.max(0, chunks.length - 1));
-  renderChunkList();
+  if (!suspendList) renderChunkList();
   if (window.TL) TL.render();
 }
 const chunkAt = t => S.chunks.find(c => t >= c.start && t < c.end) || null;
@@ -879,14 +880,38 @@ function applyAlignedLines(aligned, offset, lines) {
   const words = [];
   aligned.forEach((l, k) => {
     const e = lines[k];
-    const times = l.anchored && l.times.length ? l.times.map(([i, t]) => [i, t + offset]) : [[0, e.start], [e.text.length, e.end]];
-    const ws = wordsFromLine({ text: l.text, times }, k, S.countMode, e.end);
-    if (ws.length) ws[ws.length - 1].end = e.end;
+    const good = l.anchored && l.times.length;
+    const times = good ? l.times.map(([i, t]) => [i, t + offset]) : [[0, e.start], [e.text.length, e.end]];
+    const last = times[times.length - 1][1];
+    const next = aligned[k + 1];
+    const nextStart = next && next.anchored && next.times.length ? next.times[0][1] + offset : lines[k + 1] ? lines[k + 1].start : Infinity;
+    let end = good && !(e.end > last && e.end - last < 1.2) ? last + 0.35 : e.end;
+    end = Math.min(end, nextStart);
+    const ws = wordsFromLine({ text: l.text, times }, k, S.countMode, end);
+    if (ws.length) ws[ws.length - 1].end = end;
     words.push(...ws);
   });
   S.words = words;
   rebuild();
   commit();
+}
+async function alignSrtToSound(file, entries) {
+  $('btnSrt').disabled = true;
+  setNotice('');
+  try {
+    S.script = entries.map(e => e.text).join('\n');
+    const res = await listenOnDevice();
+    if (res.draft || res.lines.length !== entries.length) throw new Error('ຈັບເວລາບໍ່ສຳເລັດ');
+    const ok = res.lines.filter(l => l.anchored).length;
+    if (ok < res.lines.length / 2) {
+      setNotice(`⚠ ຂໍ້ຄວາມໃນ ${file.name} ບໍ່ກົງກັບສຽງໃນຄິບ (ກົງ ${ok}/${res.lines.length} ແຖວ) ຈຶ່ງໃຊ້ເວລາຕາມໄຟລ໌ໄວ້ກ່ອນ. ກວດວ່າເປັນໄຟລ໌ຂອງຄິບນີ້ບໍ່`);
+    } else {
+      applyAlignedLines(res.lines, 0, entries);
+      setNotice(`✓ ເປີດ ${file.name} ແລ້ວ: ຈັບເວລາຈາກສຽງໄດ້ ${ok}/${res.lines.length} ແຖວ${ok < res.lines.length ? ', ແຖວທີ່ເຫຼືອໃຊ້ເວລາຕາມໄຟລ໌' : ''}`, 'good');
+    }
+  } catch (e) {
+    setNotice(`ໃຊ້ເວລາຕາມໄຟລ໌ໄວ້ກ່ອນ ເພາະຈັບເວລາຈາກສຽງບໍ່ສຳເລັດ (${e.message})`);
+  } finally { $('btnSrt').disabled = false; commit(); }
 }
 function applyTimedLines(entries) {
   const words = [];
@@ -906,7 +931,11 @@ function applyTimedLines(entries) {
 async function importSrt(file) {
   const entries = parseSrt(await decodeTextFile(file));
   if (!entries.length) { setNotice('ອ່ານໄຟລ໌ນີ້ບໍ່ໄດ້ ຫຼື ບໍ່ມີຂໍ້ຄວາມ ກະລຸນາກວດວ່າເປັນໄຟລ໌ .srt', 'bad'); return; }
+  S.offset = 0; // an old shift must not push the new text away from the sound
   applyTimedLines(entries);
+  syncControls();
+  if (window.TL) TL.setCaptionsFree(TL.serialize().audio.some(a => a.kind === 'voice'));
+  if (TLon() && S.video.hasAudio && !$('srtKeep').checked) { await alignSrtToSound(file, entries); return; }
   const last = entries[entries.length - 1].end;
   if (S.video && last > duration() + 0.5) setNotice(`⚠ ເປີດ ${entries.length} ແຖວແລ້ວ ແຕ່ເວລາໃນໄຟລ໌ຍາວກວ່າຄິບ (${fmt(last)} ກັບ ${fmt(duration())}) ອາດບໍ່ແມ່ນຄູ່ກັນ`);
   else setNotice(`✓ ເປີດ ${file.name} ແລ້ວ: ${entries.length} ແຖວ ໃຊ້ເວລາຕາມໄຟລ໌`, 'good');

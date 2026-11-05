@@ -141,13 +141,13 @@ body.static .webOnly { display: block; }
 #tl { flex: none; background: #15171c; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .tlbar { display: flex; gap: 4px; align-items: center; padding: 4px 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
 .tlbar button { padding: 3px 9px; font-size: 13px; }
-#tlTracks { overflow-x: auto; overflow-y: hidden; height: 148px; position: relative; -webkit-overflow-scrolling: touch; }
+#tlTracks { overflow-x: auto; overflow-y: hidden; height: 158px; position: relative; -webkit-overflow-scrolling: touch; }
 #tlInner { position: relative; height: 100%; min-width: 100%; }
 #tlRuler { position: relative; height: 18px; background: #0f1115; cursor: pointer; touch-action: none; user-select: none; }
 #tlRuler b { position: absolute; top: 2px; font: 10px Consolas, monospace; color: var(--muted); padding-left: 3px; border-left: 1px solid #3a404c; }
 .tltrack { position: relative; height: 44px; margin-top: 2px; }
 .tltrack.slim { height: 28px; }
-.tltrack.caps { height: 14px; }
+.tltrack.caps { height: 24px; }
 .tlb { position: absolute; top: 0; bottom: 0; border-radius: 5px; overflow: hidden; border: 1px solid rgba(255,255,255,.2); background: #2d4f86 center left / auto 100% repeat-x; cursor: pointer; user-select: none; }
 .tlb.overlay { background-color: #6a3f96; }
 .tlb.audio { background: #1f6a53; }
@@ -157,7 +157,14 @@ body.static .webOnly { display: block; }
 .tlb em { position: absolute; left: 2px; top: 1px; font-size: 11px; font-style: normal; pointer-events: none; }
 .tlb .h { position: absolute; top: 0; bottom: 0; width: 14px; background: #ffd21e; cursor: ew-resize; touch-action: none; }
 .tlb .h.l { left: 0; } .tlb .h.r { right: 0; }
-.tlcap { position: absolute; top: 2px; height: 9px; background: #e5141f; border-radius: 2px; pointer-events: none; }
+.tlb.cap { background: #a8222b; border-color: rgba(255,255,255,.28); }
+.tlb.cap.on { background: #d42a35; }
+.tlb.cap span { top: 2px; bottom: auto; font-size: 11px; font-weight: 700; left: 3px; right: 3px; }
+.tlb.cap.on { overflow: visible; z-index: 3; }
+.tlb.cap span { overflow: hidden; }
+/* Outside the block, so even a very short caption can still be grabbed in the middle. */
+.tlb.cap .h { width: 14px; border-radius: 3px; }
+.tlb.cap .h.l { left: -15px; } .tlb.cap .h.r { right: -15px; }
 #tlHead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; z-index: 5; box-shadow: 0 0 3px #000; }
 body:not(.static) #tl { display: none; }
 
@@ -174,8 +181,8 @@ body:not(.static) #tl { display: none; }
   main { display: flex; flex-direction: column; overflow: hidden; }
   #center { flex: 0 0 auto; height: 50dvh; padding: 6px 8px 4px; gap: 4px; }
   body.static #center { height: 64dvh; }
-  #tlTracks { height: 118px; }
-  .tltrack { height: 34px; } .tltrack.slim { height: 22px; } .tltrack.caps { height: 10px; }
+  #tlTracks { height: 126px; }
+  .tltrack { height: 30px; } .tltrack.slim { height: 18px; } .tltrack.caps { height: 28px; }
   .tlbar button { min-height: 30px; padding: 2px 7px; }
   .tabs button { font-size: 12.5px; }
   .posbar { gap: 8px; font-size: 12px; flex-wrap: nowrap; overflow-x: auto; }
