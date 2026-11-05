@@ -1,9 +1,10 @@
 /* The video editor: a timeline of clips, overlays and sound. Preview and export draw through the same compose(),
    so what plays is what gets saved. Captions stay attached to the footage when clips are cut or moved. */
 (function () {
-  const T = { canvas: { w: 1080, h: 1920, bg: '#000000' }, clips: [], overlays: [], audio: [], captionsFree: false };
+  const freshTracks = () => ({ video: { lock: false, mute: false }, overlay: { lock: false, hide: false }, audio: { lock: false, mute: false }, caps: { lock: false, hide: false } });
+  const T = { canvas: { w: 1080, h: 1920, bg: '#000000' }, clips: [], overlays: [], audio: [], captionsFree: false, tracks: freshTracks() };
   const media = new Map();
-  const ui = { pps: 40, selected: null, clock: 0, playing: false, drag: null, lastNow: 0 };
+  const ui = { pps: 40, selected: null, primaryWord: null, sel: new Set(), capSel: new Set(), multi: false, snap: true, clock: 0, playing: false, drag: null, marquee: null, lastNow: 0, lastPointer: 'mouse' };
   const uid = () => Math.random().toString(36).slice(2, 10);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const el = id => document.getElementById(id);
@@ -128,7 +129,8 @@
     T.clips = []; T.overlays = []; T.audio = []; T.captionsFree = false;
     media.clear();
     els.clear(); auds.clear();
-    ui.selected = null; ui.clock = 0;
+    clearSelection(); ui.clock = 0;
+    T.tracks = freshTracks();
     S.words = []; S.script = ''; S.draft = false;
     $('script').value = '';
     setNotice('');
@@ -174,7 +176,7 @@
       drawFit(ctx, s.img, s.w, s.h, W, H, it.clip);
       ctx.restore();
     }
-    for (const o of T.overlays) {
+    for (const o of T.tracks.overlay.hide ? [] : T.overlays) {
       if (t < o.start || t >= o.start + o.dur) continue;
       const s = getSource('overlay', o, o.in + (t - o.start));
       if (!s) continue;
@@ -255,7 +257,7 @@
       const p = it.overlap > 0 ? clamp((t - it.start) / it.overlap, 0, 1) : 1;
       const next = lay.items[i + 1];
       const fadeOut = next && next.overlap > 0 ? clamp((it.end - t) / next.overlap, 0, 1) : 1;
-      syncVideoEl(e, src, it.clip.speed, it.clip.muted ? 0 : it.clip.volume * p * fadeOut);
+      syncVideoEl(e, src, it.clip.speed, it.clip.muted || T.tracks.video.mute ? 0 : it.clip.volume * p * fadeOut);
     });
     for (const o of T.overlays) {
       if (t < o.start - 1 || t >= o.start + o.dur) continue;
@@ -275,14 +277,14 @@
     const t = ui.clock;
     const running = e => e && !e.paused && !e.seeking && e.readyState >= 3;
     for (const a of T.audio) {
-      if (a.kind !== 'voice' || t < a.start || t >= a.start + (a.out - a.in)) continue;
+      if (T.tracks.audio.mute || a.kind !== 'voice' || t < a.start || t >= a.start + (a.out - a.in)) continue;
       const e = auds.get(a.id);
       if (running(e)) return a.start + (e.currentTime - a.in);
     }
     for (const it of layout().items) {
       if (t < it.start || t >= it.end) continue;
       const e = els.get(it.clip.id);
-      if (it.overlap <= 0 && running(e) && e.tagName === 'VIDEO' && !it.clip.muted) return it.start + (e.currentTime - it.clip.in) / it.clip.speed;
+      if (it.overlap <= 0 && running(e) && e.tagName === 'VIDEO' && !it.clip.muted && !T.tracks.video.mute) return it.start + (e.currentTime - it.clip.in) / it.clip.speed;
     }
     return null;
   }
@@ -297,7 +299,7 @@
       let v = a.volume;
       if (a.fadeIn > 0) v *= clamp(local / a.fadeIn, 0, 1);
       if (a.fadeOut > 0) v *= clamp((dur - local) / a.fadeOut, 0, 1);
-      e.volume = clamp(v, 0, 1);
+      e.volume = T.tracks.audio.mute ? 0 : clamp(v, 0, 1);
       if (e.paused) { e.currentTime = a.in + local; e.play().catch(() => {}); } else if (Math.abs(e.currentTime - (a.in + local)) > 0.3) e.currentTime = a.in + local;
     }
     for (const [id, e] of auds) if (!T.audio.some(a => a.id === id)) { e.pause(); auds.delete(id); }
@@ -309,25 +311,129 @@
   }
 
   // ---------- Timeline UI ----------
-  const fmtT = v => `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, '0')}`;
-  function select(kind, id) { ui.selected = id ? { kind, id } : null; render(); renderInspector(); if (id) showTab('clip'); }
+  const LANE = { clip: 44, overlay: 26, audio: 34, cap: 28 };
+  const fmtT = v => (ui.pps > 90 ? `${Math.floor(v / 60)}:${(v % 60).toFixed(1).padStart(4, '0')}` : `${Math.floor(v / 60)}:${String(Math.floor(v % 60)).padStart(2, '0')}`);
+
+  // ---- Selection: any number of items; the last one touched is "primary" and fills the inspector ----
+  const keyOf = (kind, item) => (kind === 'cap' ? null : `${kind}:${item.id}`);
+  const isSelected = (kind, item) => (kind === 'cap' ? ui.capSel.has(item.words[0]) : ui.sel.has(keyOf(kind, item)));
+  const listFor = kind => (kind === 'clip' ? T.clips : kind === 'overlay' ? T.overlays : T.audio);
+  const trackOf = kind => ({ clip: 'video', overlay: 'overlay', audio: 'audio', cap: 'caps' }[kind]);
+  const locked = kind => T.tracks[trackOf(kind)].lock;
+  function setPrimary(kind, item) {
+    if (!item) { ui.selected = null; ui.primaryWord = null; return; }
+    ui.primaryWord = kind === 'cap' ? item.words[0] : null;
+    ui.selected = { kind, id: kind === 'cap' ? 'cap' : item.id };
+  }
   const selectedItem = () => {
     if (!ui.selected) return null;
-    if (ui.selected.kind === 'cap') return S.chunks[Number(ui.selected.id.slice(1))] || null;
-    const list = ui.selected.kind === 'clip' ? T.clips : ui.selected.kind === 'overlay' ? T.overlays : T.audio;
-    return list.find(x => x.id === ui.selected.id) || null;
+    if (ui.selected.kind === 'cap') return S.chunks.find(c => c.words[0] === ui.primaryWord) || null;
+    return listFor(ui.selected.kind).find(x => x.id === ui.selected.id) || null;
   };
-  function block(kind, item, left, width, label, track) {
+  function clearSelection() { ui.sel.clear(); ui.capSel.clear(); setPrimary(null); }
+  function addToSelection(kind, item) {
+    if (kind === 'cap') ui.capSel.add(item.words[0]); else ui.sel.add(keyOf(kind, item));
+    setPrimary(kind, item);
+  }
+  function removeFromSelection(kind, item) {
+    if (kind === 'cap') ui.capSel.delete(item.words[0]); else ui.sel.delete(keyOf(kind, item));
+    const rest = selectionList();
+    setPrimary(rest.length ? rest[rest.length - 1].kind : null, rest.length ? rest[rest.length - 1].item : null);
+  }
+  function selectionList() {
+    const out = [];
+    for (const kind of ['clip', 'overlay', 'audio']) for (const item of listFor(kind)) if (ui.sel.has(keyOf(kind, item))) out.push({ kind, item });
+    for (const c of S.chunks) if (ui.capSel.has(c.words[0])) out.push({ kind: 'cap', item: c });
+    return out;
+  }
+  /** Kept for callers that pick one item or none. */
+  function select(kind, id) {
+    clearSelection();
+    if (id) {
+      const item = kind === 'cap' ? S.chunks[Number(String(id).slice(1))] : listFor(kind).find(x => x.id === id);
+      if (item) addToSelection(kind, item);
+    }
+    render(); renderInspector();
+    if (id) showTab('clip');
+  }
+  function refreshAfterSelection(item, kind) {
+    if (kind === 'cap' && item && selectionList().length === 1) { S.selected = item.idx; TL.seek(item.start + S.offset + 0.001); renderChunkList(); }
+    render(); renderInspector();
+    if (selectionList().length) showTab('clip');
+  }
+  /** Click logic shared by mouse and touch. Shift picks a run of captions; Ctrl or the multi button adds one. */
+  function clickSelect(kind, item, e) {
+    const add = e.ctrlKey || e.metaKey || ui.multi;
+    if (e.shiftKey && kind === 'cap' && ui.primaryWord) {
+      const from = S.chunks.findIndex(c => c.words[0] === ui.primaryWord), to = item.idx;
+      for (let i = Math.min(from, to); i <= Math.max(from, to); i++) ui.capSel.add(S.chunks[i].words[0]);
+      setPrimary(kind, item);
+    } else if (add) {
+      if (isSelected(kind, item)) removeFromSelection(kind, item); else addToSelection(kind, item);
+    } else {
+      clearSelection();
+      addToSelection(kind, item);
+    }
+    refreshAfterSelection(item, kind);
+  }
+  const itemOfBlock = b => {
+    const kind = b.dataset.kind;
+    return { kind, item: kind === 'cap' ? S.chunks[Number(b.dataset.id.slice(1))] : listFor(kind).find(x => x.id === b.dataset.id) };
+  };
+
+  // ---- Waveforms ----
+  const peaksFor = m => {
+    if (!m || !m.file || !m.hasAudio) return null;
+    if (m.peaks) return m.peaks;
+    if (!m.peaksStarted) {
+      m.peaksStarted = true;
+      window.CS_BACKEND.peaks(m.file).then(p => { m.peaks = p; scheduleRender(); }).catch(() => {});
+    }
+    return null;
+  };
+  function drawWave(b, m, from, rate, width, color) {
+    const peaks = peaksFor(m);
+    if (!peaks || width < 4) return;
+    const w = Math.min(4000, Math.floor(width)), h = b.clientHeight || 30;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h; cv.className = 'tlwave';
+    const g = cv.getContext('2d');
+    g.fillStyle = color;
+    const perPx = rate / ui.pps * 100; // peaks are stored at 100 per second
+    for (let x = 0; x < w; x += 2) {
+      const i = Math.floor(from * 100 + x * perPx), j = Math.max(i + 1, Math.floor(i + perPx * 2));
+      let top = 0;
+      for (let k = i; k < j && k < peaks.length; k++) if (peaks[k] > top) top = peaks[k];
+      const bar = Math.max(1, Math.min(1, top * 1.4) * h);
+      g.fillRect(x, h - bar, 1.5, bar);
+    }
+    b.appendChild(cv);
+  }
+
+  // ---- Drawing the tracks ----
+  function lanes(items, startOf, endOf) {
+    const ends = [], out = new Map();
+    [...items].sort((a, b) => startOf(a) - startOf(b)).forEach(it => {
+      let lane = ends.findIndex(e => e <= startOf(it) + 0.001);
+      if (lane < 0) { lane = ends.length; ends.push(0); }
+      ends[lane] = endOf(it);
+      out.set(it, lane);
+    });
+    return { of: out, count: Math.max(1, ends.length) };
+  }
+  function block(kind, item, id, left, width, label, track, lane, laneH) {
     const b = document.createElement('div');
-    const sel = ui.selected && ui.selected.id === item.id;
-    b.className = `tlb ${kind}${sel ? ' on' : ''}`;
+    const sel = isSelected(kind, item);
+    const primary = sel && selectedItem() === item;
+    b.className = `tlb ${kind}${sel ? ' on' : ''}${primary ? ' primary' : ''}${locked(kind) ? ' lock' : ''}`;
     b.style.left = `${left}px`; b.style.width = `${Math.max(6, width)}px`;
-    b.dataset.kind = kind; b.dataset.id = item.id;
-    const m = media.get(item.m);
-    if (m && m.thumb && kind !== 'audio') b.style.backgroundImage = `url(${m.thumb})`;
+    b.style.top = `${lane * laneH + 1}px`; b.style.height = `${laneH - 2}px`;
+    b.dataset.kind = kind; b.dataset.id = id;
+    const m = kind === 'cap' ? null : media.get(item.m);
+    if (m && m.thumb && kind === 'overlay') b.style.backgroundImage = `url(${m.thumb})`;
     if (kind !== 'cap' && (!m || !m.file)) b.classList.add('missing');
     const name = document.createElement('span'); name.textContent = label; b.appendChild(name);
-    if (sel) {
+    if (primary && !locked(kind)) {
       const l = document.createElement('i'); l.className = 'h l'; l.dataset.edge = 'l';
       const r = document.createElement('i'); r.className = 'h r'; r.dataset.edge = 'r';
       b.append(l, r);
@@ -335,33 +441,85 @@
     track.appendChild(b);
     return b;
   }
+  let renderQueued = false;
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; render(); });
+  }
   function render() {
     const host = el('tlTracks');
     if (!host) return;
     const lay = layout(), tot = total(), pps = ui.pps;
     const inner = el('tlInner');
-    inner.style.width = `${Math.max(host.clientWidth, (tot + 3) * pps)}px`;
+    inner.style.width = `${Math.max(host.clientWidth, (tot + 5) * pps)}px`;
+
     const ruler = el('tlRuler');
     ruler.textContent = '';
-    const step = pps > 60 ? 1 : pps > 20 ? 5 : 15;
-    for (let s = 0; s <= tot + 3; s += step) {
-      const k = document.createElement('b'); k.style.left = `${s * pps}px`; k.textContent = fmtT(s); ruler.appendChild(k);
+    const step = [0.1, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find(s => s * pps >= 64) || 600;
+    const sub = step / (step >= 5 || step === 0.5 ? 5 : 2);
+    for (let i = 0, end = tot + 5; i * sub <= end; i++) {
+      const s = i * sub, major = Math.abs(s / step - Math.round(s / step)) < 1e-6;
+      const k = document.createElement(major ? 'b' : 'u');
+      k.style.left = `${s * pps}px`;
+      if (major) k.textContent = fmtT(s);
+      ruler.appendChild(k);
     }
-    const tv = el('tlVideo'), to = el('tlOverlay'), ta = el('tlAudio'), tc = el('tlCaps');
-    tv.textContent = ''; to.textContent = ''; ta.textContent = ''; tc.textContent = '';
+
+    const rows = { video: el('tlVideo'), overlay: el('tlOverlay'), audio: el('tlAudio'), caps: el('tlCaps') };
+    Object.values(rows).forEach(r => { r.textContent = ''; });
+    rows.video.style.height = `${LANE.clip}px`;
     lay.items.forEach((it, i) => {
-      const m = media.get(it.clip.m);
-      const b = block('clip', it.clip, it.start * pps, (it.end - it.start) * pps, `${it.clip.speed !== 1 ? `${it.clip.speed}x ` : ''}${m ? m.name : '?'}`, tv);
+      const m = media.get(it.clip.m), w = (it.end - it.start) * pps;
+      const b = block('clip', it.clip, it.clip.id, it.start * pps, w, `${it.clip.speed !== 1 ? `${it.clip.speed}x ` : ''}${m ? m.name : '?'}`, rows.video, 0, LANE.clip);
+      if (m && m.thumb) { b.style.backgroundImage = `url(${m.thumb})`; }
+      if (m && m.hasAudio && !it.clip.muted) drawWave(b, m, it.clip.in, it.clip.speed, w, 'rgba(120,255,190,.75)');
       if (i > 0 && it.clip.trans !== 'none') { const d = document.createElement('em'); d.textContent = '⧖'; b.appendChild(d); }
     });
-    T.overlays.forEach(o => block('overlay', o, o.start * pps, o.dur * pps, (media.get(o.m) || {}).name || '?', to));
-    T.audio.forEach(a => block('audio', a, a.start * pps, (a.out - a.in) * pps, `${a.kind === 'voice' ? '🎙' : '🎵'} ${a.name || ''}`, ta));
+    const ol = lanes(T.overlays, o => o.start, o => o.start + o.dur);
+    const olH = T.overlays.length ? ol.count * LANE.overlay : 16; // empty tracks stay small so the captions remain in view
+    rows.overlay.style.height = `${olH}px`;
+    T.overlays.forEach(o => block('overlay', o, o.id, o.start * pps, o.dur * pps, (media.get(o.m) || {}).name || '?', rows.overlay, ol.of.get(o), LANE.overlay));
+    const al = lanes(T.audio, a => a.start, a => a.start + (a.out - a.in));
+    const alH = T.audio.length ? al.count * LANE.audio : 16;
+    rows.audio.style.height = `${alH}px`;
+    T.audio.forEach(a => {
+      const w = (a.out - a.in) * pps, m = media.get(a.m);
+      const b = block('audio', a, a.id, a.start * pps, w, `${a.kind === 'voice' ? '🎙' : '🎵'} ${a.name || ''}`, rows.audio, al.of.get(a), LANE.audio);
+      if (m) drawWave(b, m, a.in, 1, w, 'rgba(190,255,225,.85)');
+    });
+    rows.caps.style.height = `${LANE.cap}px`;
     S.chunks.forEach((c, i) => {
-      const b = block('cap', { id: `c${i}` }, (c.start + S.offset) * pps, (c.end - c.start) * pps - 1, c.text, tc);
+      const b = block('cap', c, `c${i}`, (c.start + S.offset) * pps, (c.end - c.start) * pps - 1, c.text, rows.caps, 0, LANE.cap);
       b.title = c.text;
     });
-    const hasStuff = T.clips.length + T.audio.length > 0;
-    ['tlSplit', 'tlDelete', 'tlDup'].forEach(id => { el(id).disabled = !hasStuff; });
+    renderHeads({ video: LANE.clip, overlay: olH, audio: alH, caps: LANE.cap });
+
+    const count = selectionList().length, any = T.clips.length + T.audio.length + S.chunks.length > 0;
+    ['tlSplit', 'tlDup'].forEach(id => { el(id).disabled = !any; });
+    el('tlDelete').disabled = !count;
+    el('tlCount').textContent = count > 1 ? `ເລືອກ ${count}` : '';
+    el('tlMulti').classList.toggle('active', !!ui.multi);
+    el('tlSnapBtn').classList.toggle('active', ui.snap);
+    drawPlayhead(ui.clock, tot);
+  }
+  function renderHeads(heights) {
+    const host = el('tlHeads');
+    host.textContent = '';
+    const spacer = document.createElement('div'); spacer.className = 'tlhead ruler'; host.appendChild(spacer);
+    [['video', '🎞', 'ວິດີໂອ', 'mute', '🔊', '🔇'], ['overlay', '🖼', 'ຊ້ອນ', 'hide', '👁', '🚫'], ['audio', '🎵', 'ສຽງ', 'mute', '🔊', '🔇'], ['caps', 'Aa', 'ຟ້ອນ', 'hide', '👁', '🚫']].forEach(([track, icon, label, prop, on, off]) => {
+      const row = document.createElement('div');
+      row.className = 'tlhead'; row.style.height = `${heights[track]}px`;
+      const name = document.createElement('span'); name.className = 'nm'; name.innerHTML = `<b>${icon}</b> <small>${label}</small>`;
+      const flag = document.createElement('button'); flag.textContent = T.tracks[track][prop] ? off : on; flag.title = prop === 'mute' ? 'ປິດ/ເປີດສຽງແຖວນີ້' : 'ເຊື່ອງ/ສະແດງແຖວນີ້';
+      flag.classList.toggle('active', !!T.tracks[track][prop]);
+      flag.onclick = () => { T.tracks[track][prop] = !T.tracks[track][prop]; render(); commit(); };
+      const lock = document.createElement('button'); lock.textContent = T.tracks[track].lock ? '🔒' : '🔓'; lock.title = 'ລັອກແຖວນີ້ ບໍ່ໃຫ້ແກ້ໂດຍບັງເອີນ';
+      lock.classList.toggle('active', !!T.tracks[track].lock);
+      lock.onclick = () => { T.tracks[track].lock = !T.tracks[track].lock; render(); commit(); };
+      row.append(name, flag, lock);
+      host.appendChild(row);
+    });
   }
   function drawPlayhead(t, tot) {
     const ph = el('tlHead');
@@ -372,194 +530,460 @@
     if (ui.playing && (x < host.scrollLeft + 20 || x > host.scrollLeft + host.clientWidth - 40)) host.scrollLeft = x - 40;
     el('tlTime').textContent = `${fmt(t)} / ${fmt(tot)}`;
   }
-  const seekTrack = e => {
-    const r = el('tlInner').getBoundingClientRect();
-    TL.seek((e.clientX - r.left) / ui.pps);
+  const timeAtEvent = e => (e.clientX - el('tlInner').getBoundingClientRect().left) / ui.pps;
+  const seekTrack = e => { TL.seek(Math.max(0, timeAtEvent(e))); drawPlayhead(ui.clock, total()); };
+  function setZoom(pps, anchorX) {
+    const host = el('tlTracks');
+    const rect = host.getBoundingClientRect();
+    const x = anchorX == null ? ui.clock * ui.pps - host.scrollLeft : anchorX - rect.left;
+    const at = (host.scrollLeft + x) / ui.pps;
+    ui.pps = clamp(pps, 4, 400);
     render();
-  };
+    host.scrollLeft = at * ui.pps - x;
+  }
+  function fitZoom() {
+    const host = el('tlTracks');
+    ui.pps = clamp((host.clientWidth - 30) / Math.max(1, total()), 4, 400);
+    render();
+    host.scrollLeft = 0;
+  }
+
+  // ---- Snapping: edges stick to the playhead and to other items, as in an editor ----
+  function snapPoints(skip) {
+    const pts = [0, ui.clock];
+    if (T.clips.length) layout().items.forEach(i => { if (!skip.has(i.clip)) pts.push(i.start, i.end); });
+    T.overlays.forEach(o => { if (!skip.has(o)) pts.push(o.start, o.start + o.dur); });
+    T.audio.forEach(a => { if (!skip.has(a)) pts.push(a.start, a.start + (a.out - a.in)); });
+    S.chunks.forEach(c => { if (!skip.has(c.words[0])) pts.push(c.start, c.end); });
+    return pts;
+  }
+  /** Returns the time nudged onto the nearest point, or unchanged when none is close. */
+  function snapTo(times, pts) {
+    el('tlGuide').style.display = 'none';
+    if (!ui.snap) return 0;
+    const reach = 8 / ui.pps;
+    let best = 0, dist = reach, at = null;
+    for (const t of times) for (const p of pts) {
+      const d = Math.abs(p - t);
+      if (d < dist) { dist = d; best = p - t; at = p; }
+    }
+    if (at != null) { const g = el('tlGuide'); g.style.left = `${at * ui.pps}px`; g.style.display = 'block'; }
+    return best;
+  }
 
   // ---- Toolbar actions ----
+  function splitCaptionAt(c, t) {
+    const inside = c.words.findIndex((w, i) => i > 0 && w.start >= t - 0.001);
+    const at = inside > 0 ? inside : c.words.length - 1;
+    if (c.words.length < 2) { setNotice('ຟ້ອນນີ້ມີຄຳດຽວ ຈຶ່ງຕັດບໍ່ໄດ້. ຕັດຟ້ອນໄດ້ສະເພາະລະຫວ່າງຄຳ'); return; }
+    c.words[at - 1].brk = true;
+    c.words[at - 1].glue = false;
+    rebuild(); commit();
+  }
   function split() {
-    const lay = layout(), t = ui.clock;
-    const sel = selectedItem();
-    if (ui.selected && ui.selected.kind === 'audio' && sel && t > sel.start && t < sel.start + (sel.out - sel.in)) {
+    const lay = layout(), t = ui.clock, sel = selectedItem(), kind = ui.selected && ui.selected.kind;
+    if (kind === 'cap' && sel) { splitCaptionAt(sel, t - S.offset); return; }
+    if (kind === 'audio' && sel && t > sel.start && t < sel.start + (sel.out - sel.in)) {
       edit(() => { const at = sel.in + (t - sel.start); const b = { ...sel, id: uid(), in: at, start: t }; sel.out = at; T.audio.push(b); }, { keepCaptions: true });
       return;
     }
-    if (ui.selected && ui.selected.kind === 'overlay' && sel && t > sel.start && t < sel.start + sel.dur) {
+    if (kind === 'overlay' && sel && t > sel.start && t < sel.start + sel.dur) {
       edit(() => { const d = t - sel.start; const b = { ...sel, id: uid(), start: t, in: sel.in + d, dur: sel.dur - d }; sel.dur = d; T.overlays.push(b); }, { keepCaptions: true });
       return;
     }
     const it = lay.items.find(i => t > i.start + 0.03 && t < i.end - 0.03);
     if (!it) { setNotice('ວາງເສັ້ນເວລາໄວ້ເທິງຄິບກ່ອນ ແລ້ວກົດຕັດ'); return; }
+    if (locked('clip')) { setNotice('ແຖວວິດີໂອຖືກລັອກຢູ່'); return; }
     edit(() => {
       const at = it.clip.in + (t - it.start) * it.clip.speed;
       const b = { ...it.clip, id: uid(), in: at, trans: 'none' };
       it.clip.out = at;
       T.clips.splice(T.clips.indexOf(it.clip) + 1, 0, b);
-      ui.selected = { kind: 'clip', id: b.id };
+      clearSelection();
+      addToSelection('clip', b);
     });
   }
   function removeSelected() {
-    const sel = selectedItem();
-    if (!sel) { setNotice('ກົດເລືອກຄິບກ່ອນ'); return; }
-    const kind = ui.selected.kind;
-    if (kind === 'cap') {
-      S.words = S.words.filter(w => !sel.words.includes(w));
-      ui.selected = null;
-      rebuild(); render(); renderInspector(); commit();
-      return;
-    }
+    const list = selectionList().filter(x => !locked(x.kind));
+    if (!list.length) { setNotice('ກົດເລືອກກ່ອນ'); return; }
+    const anyClip = list.some(x => x.kind === 'clip');
+    const words = new Set(list.filter(x => x.kind === 'cap').flatMap(x => x.item.words));
+    // The captions on either side stay as they are, instead of re-flowing into each other.
+    list.filter(x => x.kind === 'cap').forEach(({ item }) => { const prev = S.chunks[item.idx - 1]; if (prev) prev.words[prev.words.length - 1].brk = true; });
+    const drop = kind => { const gone = new Set(list.filter(x => x.kind === kind).map(x => x.item)); return arr => arr.filter(i => !gone.has(i)); };
+    if (words.size) S.words = S.words.filter(w => !words.has(w));
+    clearSelection();
     edit(() => {
-      if (kind === 'clip') T.clips.splice(T.clips.indexOf(sel), 1);
-      else if (kind === 'overlay') T.overlays.splice(T.overlays.indexOf(sel), 1);
-      else T.audio.splice(T.audio.indexOf(sel), 1);
-      ui.selected = null;
-    }, { keepCaptions: kind !== 'clip' });
+      T.clips = drop('clip')(T.clips);
+      T.overlays = drop('overlay')(T.overlays);
+      T.audio = drop('audio')(T.audio);
+    }, { keepCaptions: !anyClip });
+    if (words.size) rebuild();
   }
   function duplicate() {
-    const sel = selectedItem();
-    if (!sel) { setNotice('ກົດເລືອກຄິບກ່ອນ'); return; }
-    if (ui.selected.kind === 'cap') return;
+    const list = selectionList().filter(x => x.kind !== 'cap');
+    if (!list.length) { setNotice('ກົດເລືອກຄິບ, ພາບຊ້ອນ ຫຼື ສຽງກ່ອນ'); return; }
     edit(() => {
-      const b = { ...sel, id: uid() };
-      if (ui.selected.kind === 'clip') T.clips.splice(T.clips.indexOf(sel) + 1, 0, b);
-      else if (ui.selected.kind === 'overlay') { b.start = sel.start + sel.dur; T.overlays.push(b); } else { b.start = sel.start + (sel.out - sel.in); T.audio.push(b); }
-      ui.selected = { kind: ui.selected.kind, id: b.id };
+      clearSelection();
+      for (const { kind, item } of list) {
+        const b = { ...item, id: uid() };
+        if (kind === 'clip') T.clips.splice(T.clips.indexOf(item) + 1, 0, b);
+        else if (kind === 'overlay') { b.start = item.start + item.dur; T.overlays.push(b); } else { b.start = item.start + (item.out - item.in); T.audio.push(b); }
+        addToSelection(kind, b);
+      }
     });
   }
-
-  // ---- Dragging: only an already selected block moves, so a finger can still scroll the timeline ----
-  function pointerDown(e) {
-    const handle = e.target.closest('.h');
-    const b = e.target.closest('.tlb');
-    if (!b) return;
-    const id = b.dataset.id, kind = b.dataset.kind;
-    if (!ui.selected || ui.selected.id !== id) {
-      select(kind, id);
-      if (kind === 'cap') { const c = selectedItem(); if (c) { S.selected = c.idx; TL.seek(c.start + S.offset + 0.001); renderChunkList(); } }
-      return;
-    }
-    const item = selectedItem();
+  /** Trims the selected item's start (or end) to the playhead. */
+  function trimToPlayhead(side) {
+    const sel = selectedItem(), kind = ui.selected && ui.selected.kind, t = ui.clock;
+    if (!sel) { setNotice('ກົດເລືອກກ່ອນ'); return; }
     if (kind === 'cap') {
-      startCaptionDrag(item, handle ? handle.dataset.edge : null, e);
+      const st = captionsState([sel]), a = side === 'l' ? t - S.offset : sel.start, b = side === 'r' ? t - S.offset : sel.end;
+      if (b - a < MIN_CAP) return;
+      applyCaptions(st, new Map([[sel.idx, [a, b]]]), false);
+      commit();
       return;
     }
-    ui.drag = { kind, item, edge: handle ? handle.dataset.edge : null, x0: e.clientX, snap: JSON.parse(JSON.stringify(item)), moved: false, before: layout() };
-    // On the stable parent: the blocks get redrawn during a drag, which would otherwise end a touch drag.
-    el('tlInner').setPointerCapture(e.pointerId);
-    e.preventDefault();
+    edit(() => {
+      if (kind === 'clip') {
+        const it = layout().items.find(i => i.clip === sel);
+        if (!it || t <= it.start || t >= it.end) return;
+        const at = sel.in + (t - it.start) * sel.speed;
+        if (side === 'l') sel.in = at; else sel.out = at;
+      } else if (kind === 'overlay') {
+        const end = sel.start + sel.dur;
+        if (t <= sel.start || t >= end) return;
+        if (side === 'l') { sel.in += t - sel.start; sel.dur = end - t; sel.start = t; } else sel.dur = t - sel.start;
+      } else {
+        const end = sel.start + (sel.out - sel.in);
+        if (t <= sel.start || t >= end) return;
+        if (side === 'l') { sel.in += t - sel.start; sel.start = t; } else sel.out = sel.in + (t - sel.start);
+      }
+    }, { keepCaptions: kind !== 'clip' });
   }
-  // ---- Captions: move a whole caption or drag its ends. Captions usually touch, so the neighbour gives way:
-  // it shrinks or grows at the shared edge, down to a short minimum, and never overlaps. ----
+  function selectAll() {
+    clearSelection();
+    if (!locked('cap')) S.chunks.forEach(c => ui.capSel.add(c.words[0]));
+    if (!locked('overlay')) T.overlays.forEach(o => ui.sel.add(keyOf('overlay', o)));
+    if (!locked('audio')) T.audio.forEach(a => ui.sel.add(keyOf('audio', a)));
+    const c = S.chunks[S.chunks.length - 1];
+    if (c) setPrimary('cap', c);
+    render(); renderInspector();
+  }
+  // ---- Caption editing from the timeline ----
+  function addCaption() {
+    // The new caption takes its room from its neighbours only, so the rest stay in time with the voice.
+    // With "ripple" on, everything after it moves along instead.
+    const id = Date.now(), ripple = !!ui.capRipple;
+    const place = (c, a, b, pin) => {
+      c.words[c.words.length - 1].brk = true;
+      placeCaption({ words: snapWords(c.words), a: c.start, b: c.end }, a, b, pin);
+    };
+    let t = Math.max(0, ui.clock - S.offset);
+    const cur = S.chunks.find(c => t >= c.start && t < c.end);
+    if (cur) t = Math.min(Math.max(t, cur.start + MIN_CAP), cur.end);
+    const next = S.chunks.find(c => c.start >= t && c !== cur);
+    let end = t + 1;
+    if (next && !ripple) end = Math.min(end, Math.max(next.start, next.end - MIN_CAP));
+    end = Math.max(end, t + MIN_CAP);
+    const w = { text: 'ຂໍ້ຄວາມໃໝ່', spaceAfter: false, line: id, emph: false, start: t, end, brk: true, fixedEnd: true };
+    const later = S.chunks.filter(c => c.start >= t && c !== cur);
+    if (cur) place(cur, cur.start, t, true);
+    if (ripple && next) {
+      const shift = Math.max(0, end - next.start);
+      later.forEach(c => place(c, c.start + shift, c.end + shift, false));
+    } else if (next && next.start < end) place(next, end, next.end, false);
+    S.words.push(w);
+    S.words.sort((a, b) => a.start - b.start);
+    rebuild();
+    clearSelection();
+    addToSelection('cap', S.chunks.find(c => c.words[0] === w));
+    render(); renderInspector(); showTab('clip');
+    commit();
+    const input = el('capText');
+    if (input) { input.focus(); input.select(); }
+  }
+  function mergeCaptions() {
+    const caps = selectionList().filter(x => x.kind === 'cap').map(x => x.item).sort((a, b) => a.idx - b.idx);
+    if (caps.length < 2) return;
+    for (let i = 1; i < caps.length; i++) if (caps[i].idx !== caps[i - 1].idx + 1) { setNotice('ຮວມໄດ້ສະເພາະຟ້ອນທີ່ຕິດກັນ'); return; }
+    const words = caps.flatMap(c => c.words), line = words[0].line;
+    words.forEach((w, i) => {
+      w.line = line;
+      w.brk = i === words.length - 1;
+      w.glue = i < words.length - 1;
+      if (i < words.length - 1) { w.fixedEnd = false; if (!w.spaceAfter && /[A-Za-z0-9]$/.test(w.text)) w.spaceAfter = true; }
+    });
+    clearSelection();
+    rebuild();
+    const merged = S.chunks.find(c => c.words[0] === words[0]);
+    if (merged) addToSelection('cap', merged);
+    render(); renderInspector(); commit();
+  }
+
+  // ---- Moving captions: selected ones move together; unselected neighbours give way at the shared edge. ----
   const MIN_CAP = 0.15;
   const snapWords = list => list.map(w => ({ w, start: w.start, end: w.end }));
-  function placeCaption(words, a0, b0, a, b, pin) {
-    const k = (b - a) / Math.max(0.01, b0 - a0);
-    for (const s of words) {
-      s.w.start = a + (s.start - a0) * k;
-      s.w.end = a + (s.end - a0) * k;
-    }
-    const last = words[words.length - 1].w;
+  function captionsState(selected) {
+    const picked = new Set(selected.map(c => c.idx));
+    S.chunks.forEach((c, i) => {
+      if (picked.has(i) || picked.has(i + 1)) c.words[c.words.length - 1].brk = true; // keep boundaries while times change
+    });
+    return { picked, all: S.chunks.map(c => ({ words: snapWords(c.words), a: c.start, b: c.end })) };
+  }
+  function placeCaption(s, a, b, pin) {
+    const k = (b - a) / Math.max(0.01, s.b - s.a);
+    for (const x of s.words) { x.w.start = a + (x.start - s.a) * k; x.w.end = a + (x.end - s.a) * k; }
+    const last = s.words[s.words.length - 1].w;
     last.end = b;
     if (pin) last.fixedEnd = true;
   }
-  function captionState(c) {
-    const i = c.idx, prev = S.chunks[i - 1], next = S.chunks[i + 1];
-    // Keep the caption boundaries as they are while their times change.
-    if (prev) prev.words[prev.words.length - 1].brk = true;
-    c.words[c.words.length - 1].brk = true;
-    return {
-      words: snapWords(c.words), a0: c.start, b0: c.end,
-      prev: prev && { words: snapWords(prev.words), a: prev.start, b: prev.end },
-      next: next && { words: snapWords(next.words), a: next.start, b: next.end },
-      after: S.chunks.slice(i + 2).flatMap(x => snapWords(x.words)),
-    };
-  }
-  function moveCaptionTo(st, a, b, ripple) {
-    placeCaption(st.words, st.a0, st.b0, a, b, true);
-    if (st.prev) placeCaption(st.prev.words, st.prev.a, st.prev.b, st.prev.a, Math.min(st.prev.b, a));
-    const shift = b - st.b0;
-    if (st.next) {
-      if (ripple) placeCaption(st.next.words, st.next.a, st.next.b, st.next.a + shift, st.next.b + shift);
-      else placeCaption(st.next.words, st.next.a, st.next.b, Math.max(st.next.a, b), st.next.b);
-    }
-    if (ripple) for (const w of st.after) { w.w.start = w.start + shift; w.w.end = w.end + shift; }
-    else for (const w of st.after) { w.w.start = w.start; w.w.end = w.end; }
+  /** moves: Map of caption index -> [start, end]. */
+  function applyCaptions(st, moves, ripple) {
+    const lastMoved = Math.max(...moves.keys());
+    const shift = ripple ? moves.get(lastMoved)[1] - st.all[lastMoved].b : 0;
+    const times = st.all.map((s, i) => {
+      if (moves.has(i)) return moves.get(i);
+      return i > lastMoved ? [s.a + shift, s.b + shift] : [s.a, s.b];
+    });
+    st.all.forEach((s, i) => {
+      if (moves.has(i)) { placeCaption(s, times[i][0], times[i][1], true); return; }
+      let [a, b] = times[i];
+      if (moves.has(i - 1) && !(ripple && i > lastMoved)) a = Math.max(a, times[i - 1][1]);
+      if (moves.has(i + 1)) b = Math.min(b, times[i + 1][0]);
+      placeCaption(s, a, Math.max(b, a + 0.02), false);
+    });
     rebuild();
   }
-  const leftLimit = st => (st.prev ? st.prev.a + MIN_CAP : 0);
-  const rightLimit = (st, ripple) => (ripple || !st.next ? Infinity : st.next.b - MIN_CAP);
-  function startCaptionDrag(c, edge, e) {
-    ui.drag = { kind: 'cap', edge, x0: e.clientX, moved: false, st: captionState(c) };
-    suspendList = true;
+  function shiftLimits(st, ripple) {
+    let lo = -Infinity, hi = Infinity;
+    const n = st.all.length;
+    for (let i = 0; i < n; i++) {
+      if (!st.picked.has(i)) continue;
+      if (!st.picked.has(i - 1)) lo = Math.max(lo, (i > 0 ? st.all[i - 1].a + MIN_CAP : 0) - st.all[i].a);
+      if (!st.picked.has(i + 1) && !(ripple && i === Math.max(...st.picked)) && i + 1 < n) hi = Math.min(hi, st.all[i + 1].b - MIN_CAP - st.all[i].b);
+    }
+    return [lo, hi];
+  }
+  function shiftCaptions(st, shift, ripple) {
+    const [lo, hi] = shiftLimits(st, ripple), s = clamp(shift, lo, hi), moves = new Map();
+    st.picked.forEach(i => moves.set(i, [st.all[i].a + s, st.all[i].b + s]));
+    applyCaptions(st, moves, ripple);
+    return s;
+  }
+  /** Buttons: moves everything selected by the same amount. */
+  function nudgeSelection(delta) {
+    const list = selectionList().filter(x => !locked(x.kind));
+    const caps = list.filter(x => x.kind === 'cap').map(x => x.item);
+    if (caps.length) {
+      const first = Math.min(...caps.map(c => c.start));
+      const s = shiftCaptions(captionsState(caps), delta, !!ui.capRipple);
+      if (list.length === 1) TL.seek(first + s + S.offset + 0.001);
+    }
+    for (const { kind, item } of list) if (kind === 'overlay' || kind === 'audio') item.start = Math.max(0, item.start + delta);
+    render(); renderInspector(); commit();
+  }
+
+  // ---- Pointer handling ----
+  function beginDrag(kind, item, edge, e) {
+    const others = edge ? [{ kind, item }] : selectionList().filter(x => !locked(x.kind));
+    const skip = new Set();
+    others.forEach(o => skip.add(o.kind === 'cap' ? o.item.words[0] : o.item));
+    const caps = others.filter(o => o.kind === 'cap').map(o => o.item);
+    ui.drag = {
+      kind, item, edge, x0: e.clientX, moved: false, before: layout(), pts: snapPoints(skip),
+      snap: kind === 'cap' ? null : JSON.parse(JSON.stringify(item)),
+      free: others.filter(o => o.kind === 'overlay' || o.kind === 'audio').map(o => ({ item: o.item, start: o.item.start })),
+      capState: caps.length ? captionsState(caps) : null,
+      capIdx: kind === 'cap' ? item.idx : -1,
+    };
+    if (caps.length) suspendList = true;
+    el('tlInner').setPointerCapture(e.pointerId); // on the stable parent: blocks get redrawn during the drag
+    e.preventDefault();
+  }
+  function pointerDown(e) {
+    if (e.target.closest('#tlRuler')) return;
+    const handle = e.target.closest('.h');
+    const b = e.target.closest('.tlb');
+    const mouse = e.pointerType === 'mouse';
+    if (!b) {
+      if (mouse && e.button === 0) startMarquee(e);
+      return;
+    }
+    const { kind, item } = itemOfBlock(b);
+    if (!item) return;
+    if (locked(kind)) { if (mouse) clickSelect(kind, item, e); return; }
+    if (handle) { beginDrag(kind, item, handle.dataset.edge, e); return; }
+    const adding = e.ctrlKey || e.metaKey || e.shiftKey || ui.multi;
+    if (isSelected(kind, item) && !e.shiftKey) {
+      // Already selected: a drag moves the whole selection; a plain tap is resolved on release.
+      setPrimary(kind, item);
+      beginDrag(kind, item, null, e);
+      ui.drag.tapAdds = adding;
+      return;
+    }
+    if (!mouse) return; // touch selects on click, so a finger can still scroll the timeline
+    clickSelect(kind, item, e);
+    if (!adding) beginDrag(kind, item, null, e);
+  }
+  function pointerMove(e) {
+    if (ui.marquee) { moveMarquee(e); return; }
+    const d = ui.drag;
+    if (!d) return;
+    if (Math.abs(e.clientX - d.x0) > 4) d.moved = true;
+    if (!d.moved) return;
+    const dt = (e.clientX - d.x0) / ui.pps;
+    autoScroll(e);
+    const ripple = !!ui.capRipple;
+    if (d.edge) { dragEdge(d, dt, ripple); return; }
+
+    // Moving: the block under the pointer decides the snap; everything selected follows by the same amount.
+    let shift = dt;
+    const anchor = d.kind === 'cap' ? d.capState.all[d.capIdx] : null;
+    if (d.kind === 'overlay' || d.kind === 'audio') {
+      const len = d.kind === 'overlay' ? d.snap.dur : d.snap.out - d.snap.in;
+      shift += snapTo([d.snap.start + dt, d.snap.start + dt + len], d.pts);
+    } else if (anchor) {
+      shift += snapTo([anchor.a + dt, anchor.b + dt], d.pts);
+    }
+    if (d.kind === 'clip') moveClip(d, e);
+    if (d.free.length) {
+      const least = Math.min(...d.free.map(f => f.start));
+      const s = Math.max(shift, -least);
+      d.free.forEach(f => { f.item.start = f.start + s; });
+    }
+    if (d.capState) shiftCaptions(d.capState, shift, ripple);
+    syncVideo();
+    scheduleRender();
+  }
+  function moveClip(d, e) {
+    const lay = layout(), it = d.item, cur = T.clips.indexOf(it), x = timeAtEvent(e);
+    let to = lay.items.findIndex(i => x < (i.start + i.end) / 2);
+    if (to < 0) to = T.clips.length - 1;
+    if (to !== cur) { T.clips.splice(cur, 1); T.clips.splice(to, 0, it); }
+  }
+  function dragEdge(d, dt, ripple) {
+    if (d.kind === 'cap') {
+      const st = d.capState, s = st.all[d.capIdx], left = d.edge === 'l';
+      const prev = st.all[d.capIdx - 1], next = st.all[d.capIdx + 1];
+      let v = (left ? s.a : s.b) + dt;
+      v += snapTo([v], d.pts);
+      const a = left ? clamp(v, prev ? prev.a + MIN_CAP : 0, s.b - MIN_CAP) : s.a;
+      const b = left ? s.b : clamp(v, s.a + MIN_CAP, ripple || !next ? Infinity : next.b - MIN_CAP);
+      applyCaptions(st, new Map([[d.capIdx, [a, b]]]), ripple);
+      scheduleRender();
+      return;
+    }
+    const m = media.get(d.item.m), s = d.snap, it = d.item;
+    if (d.kind === 'clip') {
+      const lay = d.before.items.find(i => i.clip === it);
+      const edgeT = (d.edge === 'l' ? lay.start : lay.end) + dt;
+      const adj = snapTo([edgeT], d.pts), use = dt + adj;
+      if (d.edge === 'l') it.in = clamp(s.in + use * s.speed, 0, s.out - 0.1);
+      else it.out = clamp(s.out + use * s.speed, s.in + 0.1, m && m.kind === 'video' ? m.duration : 3600);
+    } else if (d.kind === 'overlay') {
+      const edgeT = (d.edge === 'l' ? s.start : s.start + s.dur) + dt, use = dt + snapTo([edgeT], d.pts);
+      if (d.edge === 'l') { const nd = clamp(s.dur - use, 0.2, 3600); it.start = s.start + (s.dur - nd); it.dur = nd; if (m && m.kind === 'video') it.in = Math.max(0, s.in + (s.dur - nd)); }
+      else it.dur = clamp(s.dur + use, 0.2, m && m.kind === 'video' ? m.duration - s.in : 3600);
+    } else {
+      const edgeT = (d.edge === 'l' ? s.start : s.start + (s.out - s.in)) + dt, use = dt + snapTo([edgeT], d.pts);
+      if (d.edge === 'l') { const delta = clamp(use, -s.in, s.out - s.in - 0.1); it.in = s.in + delta; it.start = s.start + delta; }
+      else it.out = clamp(s.out + use, s.in + 0.1, m ? m.duration : 3600);
+    }
+    syncVideo();
+    scheduleRender();
+  }
+  function autoScroll(e) {
+    const host = el('tlTracks'), r = host.getBoundingClientRect();
+    if (e.clientX < r.left + 24) host.scrollLeft -= 12;
+    else if (e.clientX > r.right - 24) host.scrollLeft += 12;
+  }
+  function pointerUp(e) {
+    if (ui.marquee) { endMarquee(e); return; }
+    const d = ui.drag;
+    ui.drag = null;
+    el('tlGuide').style.display = 'none';
+    if (!d) return;
+    if (d.capState) { suspendList = false; rebuild(); }
+    if (!d.moved) {
+      if (d.tapAdds != null && !d.edge) { clickSelect(d.kind, d.item, { ctrlKey: d.tapAdds, metaKey: false, shiftKey: false }); ui.tapHandled = true; }
+      return;
+    }
+    if (d.kind === 'clip') remapCaptions(d.before, layout());
+    syncVideo(); render(); renderInspector(); commit();
+  }
+  // Touch selects on click, so that dragging a finger over an unselected block scrolls instead.
+  function onClick(e) {
+    if (ui.tapHandled) { ui.tapHandled = false; return; }
+    if (ui.lastPointer === 'mouse') return;
+    const b = e.target.closest('.tlb');
+    if (!b) { if (!e.target.closest('#tlRuler')) { seekTrack(e); if (!ui.multi) { clearSelection(); render(); renderInspector(); } } return; }
+    const { kind, item } = itemOfBlock(b);
+    if (item && !isSelected(kind, item)) clickSelect(kind, item, e);
+  }
+
+  // ---- Marquee: drag on empty space to select everything it touches ----
+  function startMarquee(e) {
+    const r = el('tlInner').getBoundingClientRect();
+    ui.marquee = { x0: e.clientX - r.left, y0: e.clientY - r.top, moved: false, base: e.ctrlKey || e.metaKey || ui.multi };
     el('tlInner').setPointerCapture(e.pointerId);
     e.preventDefault();
   }
-  function moveCaption(d, dt) {
-    const ripple = !!ui.capRipple, st = d.st;
-    let a = st.a0, b = st.b0;
-    if (d.edge === 'l') a = clamp(st.a0 + dt, leftLimit(st), st.b0 - MIN_CAP);
-    else if (d.edge === 'r') b = clamp(st.b0 + dt, st.a0 + MIN_CAP, rightLimit(st, ripple));
-    else {
-      const shift = clamp(dt, leftLimit(st) - st.a0, rightLimit(st, ripple) - st.b0);
-      a = st.a0 + shift; b = st.b0 + shift;
-    }
-    moveCaptionTo(st, a, b, ripple);
+  function moveMarquee(e) {
+    const m = ui.marquee, r = el('tlInner').getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    if (Math.abs(x - m.x0) + Math.abs(y - m.y0) > 5) m.moved = true;
+    if (!m.moved) return;
+    autoScroll(e);
+    const box = el('tlBox');
+    Object.assign(box.style, { display: 'block', left: `${Math.min(x, m.x0)}px`, top: `${Math.min(y, m.y0)}px`, width: `${Math.abs(x - m.x0)}px`, height: `${Math.abs(y - m.y0)}px` });
+    m.rect = [Math.min(x, m.x0) + r.left, Math.min(y, m.y0) + r.top, Math.max(x, m.x0) + r.left, Math.max(y, m.y0) + r.top];
+    document.querySelectorAll('#tlInner .tlb').forEach(b => {
+      const q = b.getBoundingClientRect();
+      b.classList.toggle('band', !(q.right < m.rect[0] || q.left > m.rect[2] || q.bottom < m.rect[1] || q.top > m.rect[3]) && !locked(b.dataset.kind));
+    });
   }
-  function nudgeCaption(c, delta) {
-    const ripple = !!ui.capRipple, st = captionState(c);
-    const shift = clamp(delta, leftLimit(st) - st.a0, rightLimit(st, ripple) - st.b0);
-    moveCaptionTo(st, st.a0 + shift, st.b0 + shift, ripple);
-    TL.seek(st.a0 + shift + S.offset + 0.001);
-    commit();
-  }
-  function pointerMove(e) {
-    const d = ui.drag;
-    if (!d) return;
-    if (d.kind === 'cap') {
-      if (Math.abs(e.clientX - d.x0) > 3) d.moved = true;
-      if (d.moved) moveCaption(d, (e.clientX - d.x0) / ui.pps);
+  function endMarquee(e) {
+    const m = ui.marquee;
+    ui.marquee = null;
+    el('tlBox').style.display = 'none';
+    if (!m.moved) {
+      seekTrack(e);
+      if (!m.base) clearSelection();
+      render(); renderInspector();
       return;
     }
-    const dt = (e.clientX - d.x0) / ui.pps;
-    if (Math.abs(e.clientX - d.x0) > 4) d.moved = true;
-    if (!d.moved) return;
-    const m = media.get(d.item.m), s = d.snap, it = d.item;
-    if (d.kind === 'clip') {
-      if (d.edge === 'l') it.in = clamp(s.in + dt * s.speed, 0, s.out - 0.1);
-      else if (d.edge === 'r') it.out = clamp(s.out + dt * s.speed, s.in + 0.1, m && m.kind === 'video' ? m.duration : 3600);
-      else {
-        const lay = layout(), cur = T.clips.indexOf(it);
-        const r = el('tlInner').getBoundingClientRect(), x = (e.clientX - r.left) / ui.pps;
-        let to = lay.items.findIndex(i => x < (i.start + i.end) / 2);
-        if (to < 0) to = T.clips.length - 1;
-        if (to !== cur) { T.clips.splice(cur, 1); T.clips.splice(to, 0, it); }
-      }
-    } else if (d.kind === 'overlay') {
-      if (d.edge === 'l') { const nd = clamp(s.dur - dt, 0.2, 3600); it.start = s.start + (s.dur - nd); it.dur = nd; if (m && m.kind === 'video') it.in = Math.max(0, s.in + (s.dur - nd)); }
-      else if (d.edge === 'r') it.dur = clamp(s.dur + dt, 0.2, m && m.kind === 'video' ? m.duration - s.in : 3600);
-      else it.start = Math.max(0, s.start + dt);
-    } else if (d.edge === 'l') {
-      const delta = clamp(dt, -s.in, s.out - s.in - 0.1); it.in = s.in + delta; it.start = s.start + delta;
-    } else if (d.edge === 'r') it.out = clamp(s.out + dt, s.in + 0.1, m ? m.duration : 3600);
-    else it.start = Math.max(0, s.start + dt);
-    syncVideo();
-    render();
+    if (!m.base) clearSelection();
+    let last = null;
+    document.querySelectorAll('#tlInner .tlb.band').forEach(b => {
+      const { kind, item } = itemOfBlock(b);
+      if (item) { addToSelection(kind, item); last = { kind, item }; }
+    });
+    if (last) showTab('clip');
+    render(); renderInspector();
   }
-  function pointerUp() {
-    const d = ui.drag;
-    ui.drag = null;
-    if (d && d.kind === 'cap') {
-      suspendList = false;
-      rebuild();
-      renderInspector();
-      if (d.moved) { TL.seek(S.chunks[Number(ui.selected.id.slice(1))].start + S.offset + 0.001); commit(); }
-      return;
-    }
-    if (!d || !d.moved) return;
-    if (d.kind === 'clip') { remapCaptions(d.before, layout()); }
-    syncVideo(); render(); renderInspector(); commit();
+  // Two fingers zoom; a wheel scrolls sideways, and with Ctrl it zooms at the pointer.
+  function setupGestures(host) {
+    const fingers = new Map();
+    let startDist = 0, startPps = 0;
+    host.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch') return;
+      fingers.set(e.pointerId, e.clientX);
+      if (fingers.size === 2) { const [a, b] = [...fingers.values()]; startDist = Math.abs(a - b) || 1; startPps = ui.pps; ui.drag = null; suspendList = false; }
+    }, true);
+    host.addEventListener('pointermove', e => {
+      if (!fingers.has(e.pointerId)) return;
+      fingers.set(e.pointerId, e.clientX);
+      if (fingers.size === 2) { const [a, b] = [...fingers.values()]; setZoom(startPps * (Math.abs(a - b) || 1) / startDist, (a + b) / 2); }
+    }, true);
+    const lift = e => fingers.delete(e.pointerId);
+    host.addEventListener('pointerup', lift, true);
+    host.addEventListener('pointercancel', lift, true);
+    host.addEventListener('wheel', e => {
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(ui.pps * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX); return; }
+      if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); host.scrollLeft += e.deltaY; }
+    }, { passive: false });
+    host.addEventListener('scroll', () => { el('tlHeads').scrollTop = host.scrollTop; });
   }
 
   // ---- Stage: drag an overlay directly on the picture ----
@@ -613,6 +1037,22 @@
     const h = document.createElement('h4'); h.textContent = title; g.append(h, ...rows);
     host.appendChild(g);
   }
+  function nudgeRow() {
+    const row = document.createElement('div'); row.className = 'row wrap';
+    [[-0.5, '−0.5'], [-0.1, '−0.1'], [0.1, '+0.1'], [0.5, '+0.5']].forEach(([v, l]) => {
+      const b = document.createElement('button'); b.className = 'grow'; b.textContent = `${l} ວິ`;
+      b.onclick = () => nudgeSelection(v);
+      row.appendChild(b);
+    });
+    return row;
+  }
+  function rippleBox() {
+    const lab = document.createElement('label'); lab.className = 'check small'; lab.style.marginTop = '8px';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'capRipple'; cb.checked = !!ui.capRipple;
+    cb.onchange = () => { ui.capRipple = cb.checked; };
+    lab.append(cb, document.createTextNode(' ເລື່ອນຄຳທັງໝົດທີ່ຕາມຫຼັງໄປນຳ'));
+    return lab;
+  }
   function renderInspector() {
     const host = el('tab-clip');
     if (!host) return;
@@ -634,22 +1074,41 @@
     const sel = selectedItem();
     if (!sel) { projectGroup(); return; }
     const kind = ui.selected.kind;
-    if (kind === 'cap') {
+    const many = selectionList();
+    if (many.length > 1) {
       const g = document.createElement('div'); g.className = 'group';
-      const h = document.createElement('h4'); h.textContent = 'ຟ້ອນ: ' + sel.text; g.appendChild(h);
-      const t = document.createElement('p'); t.className = 'small muted'; t.textContent = `${sel.start.toFixed(2)} – ${sel.end.toFixed(2)} ວິ. ລາກແຖບແດງເພື່ອຍ້າຍ, ລາກຂອບເຫຼືອງເພື່ອຍືດ-ຫົດ.`; g.appendChild(t);
+      const caps = many.filter(x => x.kind === 'cap').length;
+      const h = document.createElement('h4'); h.textContent = `ເລືອກໄວ້ ${many.length} ອັນ${caps ? ` (ຟ້ອນ ${caps})` : ''}`; g.appendChild(h);
+      const t = document.createElement('p'); t.className = 'small muted'; t.textContent = 'ລາກອັນໃດອັນໜຶ່ງ ທຸກອັນທີ່ເລືອກຈະຍ້າຍພ້ອມກັນ.'; g.appendChild(t);
+      g.appendChild(nudgeRow());
       const row = document.createElement('div'); row.className = 'row wrap';
-      [[-0.5, '−0.5'], [-0.1, '−0.1'], [0.1, '+0.1'], [0.5, '+0.5']].forEach(([v, l]) => {
-        const b = document.createElement('button'); b.className = 'grow'; b.textContent = `${l} ວິ`;
-        b.onclick = () => { const c = selectedItem(); if (c) { nudgeCaption(c, v); renderInspector(); } };
-        row.appendChild(b);
+      if (caps > 1) { const m = document.createElement('button'); m.className = 'grow'; m.textContent = '⧉ ຮວມເປັນຟ້ອນດຽວ'; m.onclick = mergeCaptions; row.appendChild(m); }
+      const d = document.createElement('button'); d.className = 'grow'; d.textContent = '🗑 ລົບທັງໝົດ'; d.onclick = removeSelected; row.appendChild(d);
+      g.append(row, rippleBox());
+      host.appendChild(g);
+    } else if (kind === 'cap') {
+      const g = document.createElement('div'); g.className = 'group';
+      const h = document.createElement('h4'); h.textContent = 'ແກ້ຟ້ອນ'; g.appendChild(h);
+      const input = document.createElement('input'); input.type = 'text'; input.id = 'capText'; input.value = sel.text;
+      input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') input.blur(); });
+      input.addEventListener('change', () => {
+        const at = S.words.indexOf(sel.words[0]), old = sel.words.length, before = S.words.length;
+        replaceChunkText(sel, input.value);
+        const fresh = S.words.slice(at, at + S.words.length - (before - old));
+        fresh.forEach((w, i) => { w.glue = i < fresh.length - 1; w.brk = i === fresh.length - 1; });
+        rebuild();
+        clearSelection();
+        const c = fresh.length && S.chunks.find(x => x.words[0] === fresh[0]);
+        if (c) addToSelection('cap', c);
+        render(); renderInspector(); commit();
       });
+      g.appendChild(input);
+      const t = document.createElement('p'); t.className = 'small muted'; t.textContent = `${sel.start.toFixed(2)} – ${sel.end.toFixed(2)} ວິ. ລາກເພື່ອຍ້າຍ, ລາກຂອບເຫຼືອງເພື່ອຍືດ-ຫົດ.`; g.appendChild(t);
+      g.append(nudgeRow(), rippleBox());
+      const row = document.createElement('div'); row.className = 'row wrap';
+      const cut = document.createElement('button'); cut.className = 'grow'; cut.textContent = '✂ ຕັດຟ້ອນຢູ່ເສັ້ນເວລາ'; cut.onclick = () => splitCaptionAt(sel, ui.clock - S.offset); row.appendChild(cut);
+      const all = document.createElement('button'); all.className = 'grow'; all.textContent = 'ເລືອກທັງໝົດ'; all.onclick = selectAll; row.appendChild(all);
       g.appendChild(row);
-      const lab = document.createElement('label'); lab.className = 'check small'; lab.style.marginTop = '8px';
-      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'capRipple'; cb.checked = !!ui.capRipple;
-      cb.onchange = () => { ui.capRipple = cb.checked; };
-      lab.append(cb, document.createTextNode(' ເລື່ອນຄຳທັງໝົດທີ່ຕາມຫຼັງໄປນຳ'));
-      g.appendChild(lab);
       host.appendChild(g);
     } else if (kind === 'clip') {
       group(host, 'ຄວາມໄວ ແລະ ສຽງ',
@@ -687,15 +1146,16 @@
     }
     const close = document.createElement('button');
     close.className = 'wide'; close.textContent = 'ຍົກເລີກການເລືອກ';
-    close.onclick = () => select(null, null);
+    close.onclick = () => { clearSelection(); render(); renderInspector(); };
     host.appendChild(close);
   }
 
   // ---------- Persistence ----------
-  const serialize = () => ({ canvas: T.canvas, clips: T.clips, overlays: T.overlays, audio: T.audio, captionsFree: T.captionsFree, media: [...media.values()].map(({ id, name, kind, width, height, duration, hasAudio }) => ({ id, name, kind, width, height, duration, hasAudio })) });
+  const serialize = () => ({ canvas: T.canvas, clips: T.clips, overlays: T.overlays, audio: T.audio, captionsFree: T.captionsFree, tracks: T.tracks, media: [...media.values()].map(({ id, name, kind, width, height, duration, hasAudio }) => ({ id, name, kind, width, height, duration, hasAudio })) });
   function load(data) {
     if (!data) return;
-    Object.assign(T, { canvas: data.canvas, clips: data.clips, overlays: data.overlays, audio: data.audio, captionsFree: !!data.captionsFree });
+    Object.assign(T, { canvas: data.canvas, clips: data.clips, overlays: data.overlays, audio: data.audio, captionsFree: !!data.captionsFree, tracks: { ...freshTracks(), ...(data.tracks || {}) } });
+    clearSelection();
     for (const m of data.media || []) {
       const cur = media.get(m.id);
       media.set(m.id, cur && cur.file ? cur : m);
@@ -709,26 +1169,42 @@
     const box = document.createElement('div');
     box.id = 'tl';
     box.innerHTML = `
+      <div id="tlGrip" title="ລາກເພື່ອປັບຄວາມສູງ"></div>
       <div class="tlbar">
-        <button id="tlNew" title="ລ້າງໄທມ໌ລາຍ ເພື່ອເລີ່ມໂປຣເຈັກໃໝ່">🗋 ໃໝ່</button>
+        <button id="tlNew" title="ລ້າງໄທມ໌ລາຍ ເພື່ອເລີ່ມໂປຣເຈັກໃໝ່">🗋</button>
         <button id="tlAdd" title="ເພີ່ມຄິບ ຫຼື ຮູບ">＋ ຄິບ</button>
-        <button id="tlSplit" title="ຕັດຄິບຢູ່ເສັ້ນເວລາ">✂ ຕັດ</button>
-        <button id="tlDelete" title="ລົບສິ່ງທີ່ເລືອກ">🗑</button>
-        <button id="tlDup" title="ສຳເນົາສິ່ງທີ່ເລືອກ">⧉</button>
-        <button id="tlAddAudio" title="ເພີ່ມເພງ ຫຼື ສຽງພາກ">🎵 ສຽງ</button>
-        <button id="tlAddOverlay" title="ເພີ່ມໂລໂກ້ ຫຼື ພາບຊ້ອນ">🖼 ຊ້ອນ</button>
+        <button id="tlAddAudio" title="ເພີ່ມເພງ ຫຼື ສຽງພາກ">🎵</button>
+        <button id="tlAddOverlay" title="ເພີ່ມໂລໂກ້ ຫຼື ພາບຊ້ອນ">🖼</button>
+        <button id="tlAddCap" title="ເພີ່ມຟ້ອນຢູ່ເສັ້ນເວລາ">＋ Aa</button>
+        <i class="sep"></i>
+        <button id="tlUndo" title="ຍ້ອນກັບ (Ctrl+Z)">↶</button>
+        <button id="tlRedo" title="ເຮັດຄືນ (Ctrl+Y)">↷</button>
+        <button id="tlSplit" title="ຕັດຢູ່ເສັ້ນເວລາ (S)">✂</button>
+        <button id="tlTrimL" title="ຕັດຫົວຮອດເສັ້ນເວລາ (Q)">⇤</button>
+        <button id="tlTrimR" title="ຕັດທ້າຍຮອດເສັ້ນເວລາ (W)">⇥</button>
+        <button id="tlDelete" title="ລົບສິ່ງທີ່ເລືອກ (Delete)">🗑</button>
+        <button id="tlDup" title="ສຳເນົາ (Ctrl+D)">⧉</button>
+        <i class="sep"></i>
+        <button id="tlMulti" title="ໂໝດເລືອກຫຼາຍອັນ: ກົດໄດ້ເທື່ອລະອັນ (ຄອມ: Ctrl+ກົດ, Shift+ກົດ ຫຼື ລາກກອບ)">☑</button>
+        <button id="tlSnapBtn" title="ດູດຕິດເສັ້ນເວລາ ແລະ ຂອບອື່ນ">🧲</button>
+        <span id="tlCount" class="small"></span>
         <span class="grow"></span>
         <span id="tlTime" class="mono small muted"></span>
-        <button id="tlOut" title="ຍໍ່">−</button><button id="tlIn" title="ຂະຫຍາຍ">＋</button>
+        <button id="tlOut" title="ຍໍ່ (-)">−</button><button id="tlFit" title="ເຫັນທັງໝົດ">⤢</button><button id="tlIn" title="ຂະຫຍາຍ (+)">＋</button>
       </div>
-      <div id="tlTracks"><div id="tlInner">
-        <div id="tlRuler"></div>
-        <div id="tlVideo" class="tltrack"></div>
-        <div id="tlOverlay" class="tltrack slim"></div>
-        <div id="tlAudio" class="tltrack slim"></div>
-        <div id="tlCaps" class="tltrack caps"></div>
-        <div id="tlHead"></div>
-      </div></div>
+      <div id="tlBody">
+        <div id="tlHeads"></div>
+        <div id="tlTracks"><div id="tlInner">
+          <div id="tlRuler"></div>
+          <div id="tlVideo" class="tltrack"></div>
+          <div id="tlOverlay" class="tltrack"></div>
+          <div id="tlAudio" class="tltrack"></div>
+          <div id="tlCaps" class="tltrack"></div>
+          <div id="tlGuide"></div>
+          <div id="tlBox"></div>
+          <div id="tlHead"></div>
+        </div></div>
+      </div>
       <input id="tlPickClip" type="file" accept="video/*,image/*" multiple class="hidden">
       <input id="tlPickAudio" type="file" accept="audio/*,video/*" multiple class="hidden">
       <input id="tlPickOverlay" type="file" accept="image/*,video/*" class="hidden">`;
@@ -763,23 +1239,62 @@
     el('tlSplit').onclick = split;
     el('tlDelete').onclick = removeSelected;
     el('tlDup').onclick = duplicate;
-    el('tlIn').onclick = () => { ui.pps = Math.min(240, ui.pps * 1.5); render(); };
-    el('tlOut').onclick = () => { ui.pps = Math.max(4, ui.pps / 1.5); render(); };
-    const inner = el('tlInner');
-    inner.addEventListener('pointerdown', pointerDown);
+    el('tlTrimL').onclick = () => trimToPlayhead('l');
+    el('tlTrimR').onclick = () => trimToPlayhead('r');
+    el('tlAddCap').onclick = addCaption;
+    el('tlUndo').onclick = () => undo();
+    el('tlRedo').onclick = () => redo();
+    el('tlMulti').onclick = () => { ui.multi = !ui.multi; render(); };
+    el('tlSnapBtn').onclick = () => { ui.snap = !ui.snap; render(); };
+    el('tlIn').onclick = () => setZoom(ui.pps * 1.5);
+    el('tlOut').onclick = () => setZoom(ui.pps / 1.5);
+    el('tlFit').onclick = fitZoom;
+    const inner = el('tlInner'), tracks = el('tlTracks');
+    inner.addEventListener('pointerdown', e => { ui.lastPointer = e.pointerType; pointerDown(e); });
     inner.addEventListener('pointermove', pointerMove);
     inner.addEventListener('pointerup', pointerUp);
-    inner.addEventListener('pointercancel', pointerUp);
+    inner.addEventListener('pointercancel', () => { ui.drag = null; ui.marquee = null; suspendList = false; el('tlBox').style.display = 'none'; el('tlGuide').style.display = 'none'; });
+    inner.addEventListener('click', onClick);
+    setupGestures(tracks);
+    // The ruler always moves the playhead.
     let rulerDown = false;
     const ruler = el('tlRuler');
-    ruler.addEventListener('pointerdown', e => { rulerDown = true; ruler.setPointerCapture(e.pointerId); seekTrack(e); });
-    ruler.addEventListener('pointermove', e => { if (rulerDown) seekTrack(e); });
+    ruler.addEventListener('pointerdown', e => { rulerDown = true; ruler.setPointerCapture(e.pointerId); seekTrack(e); e.stopPropagation(); });
+    ruler.addEventListener('pointermove', e => { if (rulerDown) { seekTrack(e); autoScroll(e); } });
     ruler.addEventListener('pointerup', () => { rulerDown = false; });
-    el('tlVideo').addEventListener('click', e => { if (!e.target.closest('.tlb')) { seekTrack(e); select(null, null); } });
+    // Drag the top edge to give the timeline more or less room.
+    const grip = el('tlGrip');
+    const saved = Number(localStorage.getItem('cs.tlHeight'));
+    if (saved) tracks.style.height = el('tlHeads').style.height = `${saved}px`;
+    let gripY = null, gripH = 0;
+    grip.addEventListener('pointerdown', e => { gripY = e.clientY; gripH = tracks.clientHeight; grip.setPointerCapture(e.pointerId); e.preventDefault(); });
+    grip.addEventListener('pointermove', e => {
+      if (gripY == null) return;
+      const h = clamp(gripH + gripY - e.clientY, 90, 420);
+      tracks.style.height = el('tlHeads').style.height = `${h}px`;
+      fitStage();
+    });
+    grip.addEventListener('pointerup', () => { if (gripY != null) localStorage.setItem('cs.tlHeight', String(tracks.clientHeight)); gripY = null; });
     document.addEventListener('keydown', e => {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-      if (e.key === 's' || e.key === 'S') split();
-      if (e.key === 'Delete' || e.key === 'Backspace') removeSelected();
+      const key = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
+      const frame = e.shiftKey ? 1 : 1 / 30;
+      if (ctrl && key === 'a') { e.preventDefault(); selectAll(); }
+      else if (ctrl && key === 'd') { e.preventDefault(); duplicate(); }
+      else if (ctrl && key === 'b') { e.preventDefault(); split(); }
+      else if (ctrl) return;
+      else if (key === 's') split();
+      else if (key === 'q') trimToPlayhead('l');
+      else if (key === 'w') trimToPlayhead('r');
+      else if (key === 'n') { ui.snap = !ui.snap; render(); }
+      else if (key === 'delete' || key === 'backspace') { e.preventDefault(); removeSelected(); }
+      else if (key === 'escape') { clearSelection(); render(); renderInspector(); }
+      else if (key === 'arrowleft') { e.preventDefault(); TL.seek(ui.clock - frame); drawPlayhead(ui.clock, total()); }
+      else if (key === 'arrowright') { e.preventDefault(); TL.seek(ui.clock + frame); drawPlayhead(ui.clock, total()); }
+      else if (key === 'home') TL.seek(0);
+      else if (key === 'end') TL.seek(total());
+      else if (key === '=' || key === '+') setZoom(ui.pps * 1.25);
+      else if (key === '-') setZoom(ui.pps / 1.25);
     });
     render();
     renderInspector();
@@ -793,12 +1308,12 @@
     const jobs = [];
     lay.items.forEach((it, i) => {
       const m = media.get(it.clip.m);
-      if (!m || !m.file || !m.hasAudio || it.clip.muted || it.clip.volume <= 0) return;
+      if (!m || !m.file || !m.hasAudio || it.clip.muted || it.clip.volume <= 0 || T.tracks.video.mute) return;
       const next = lay.items[i + 1];
       jobs.push({ m, from: it.clip.in, to: it.clip.out, at: it.start, rate: it.clip.speed, volume: it.clip.volume, fadeIn: it.overlap, fadeOut: next ? next.overlap : 0 });
     });
     T.audio.forEach(a => {
-      if (excludeMusic && a.kind === 'music') return;
+      if ((excludeMusic && a.kind === 'music') || T.tracks.audio.mute) return;
       const m = media.get(a.m);
       if (m && m.file) jobs.push({ m, from: a.in, to: a.out, at: a.start, rate: 1, volume: a.volume, fadeIn: a.fadeIn, fadeOut: a.fadeOut });
     });
@@ -838,13 +1353,14 @@
 
   // ---------- Export ----------
   function isUntouchedSingleClip() {
-    if (T.clips.length !== 1 || T.overlays.length || T.audio.length) return null;
+    if (T.clips.length !== 1 || T.overlays.length || T.audio.length || T.tracks.video.mute) return null;
     const c = T.clips[0], m = media.get(c.m);
     const plain = m && m.kind === 'video' && c.in === 0 && Math.abs(c.out - m.duration) < 0.001 && c.speed === 1 && !c.muted && c.volume === 1 && c.zoom === 1 && !c.x && !c.y
       && c.bright === 1 && c.contrast === 1 && c.sat === 1 && T.canvas.w === m.width - (m.width % 2) && T.canvas.h === m.height - (m.height % 2);
     return plain ? m : null;
   }
-  async function exportVideo(payload, onProgress, isCancelled) {
+  async function exportVideo(payload0, onProgress, isCancelled) {
+    const payload = T.tracks.caps.hide ? { ...payload0, chunks: [] } : payload0;
     const single = isUntouchedSingleClip();
     if (single) return window.CS_BACKEND.exportMp4(payload, { file: single.file, name: single.name, width: single.width, height: single.height }, onProgress, isCancelled);
     if (missingMedia().some(m => T.clips.some(c => c.m === m.id) || T.overlays.some(o => o.m === m.id) || T.audio.some(a => a.m === m.id))) { relinkNotice(); throw new Error('ຍັງມີໄຟລ໌ທີ່ຕ້ອງເລືອກຄືນ'); }
@@ -967,5 +1483,6 @@
     setCaptionsFree: v => { T.captionsFree = v; },
     relinkNotice,
     hasMissing: () => missingMedia().length > 0,
+    capsHidden: () => T.tracks.caps.hide,
   };
 })();

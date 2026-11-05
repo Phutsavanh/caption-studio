@@ -90,6 +90,27 @@
       return toUrl(cv);
     } finally { input.dispose?.(); }
   }
+  /** Loudest level per 1/100 s, for drawing the waveform on the timeline. */
+  async function peaks(file) {
+    const MB = await loadMb();
+    const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
+    try {
+      const track = await input.getPrimaryAudioTrack();
+      if (!track) return null;
+      const out = new Float32Array(Math.ceil((await input.computeDuration()) * 100) + 1);
+      const sink = new MB.AudioBufferSink(track);
+      let n = 0;
+      for await (const { buffer, timestamp } of sink.buffers()) {
+        const d = buffer.getChannelData(0), rate = buffer.sampleRate;
+        for (let i = 0; i < d.length; i += 8) {
+          const k = Math.floor((timestamp + i / rate) * 100), v = Math.abs(d[i]);
+          if (k >= 0 && k < out.length && v > out[k]) out[k] = v;
+        }
+        if (++n % 200 === 0) await new Promise(r => setTimeout(r)); // stay responsive on long files
+      }
+      return out;
+    } finally { input.dispose?.(); }
+  }
   async function extractPcm(file, onProgress) {
     const MB = await loadMb();
     const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
@@ -211,7 +232,7 @@
   const shareLastExport = () => navigator.share({ files: [lastExportFile], title: lastExportFile.name });
   const canShare = () => !!(lastExportFile && navigator.canShare && navigator.canShare({ files: [lastExportFile] }));
 
-  window.CS_BACKEND = { mediabunny: loadMb, openTarget, finishExport, probe, thumbnail, fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
+  window.CS_BACKEND = { peaks, mediabunny: loadMb, openTarget, finishExport, probe, thumbnail, fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
 
   // The old Whisper model isn't used any more: give its 300 MB back to the phone.
   if (self.caches) ['transformers-cache', 'caption-studio-v1'].forEach(name => caches.delete(name).catch(() => {}));

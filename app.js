@@ -192,16 +192,31 @@ function commit() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const snap = snapshot();
-    if (history[history.length - 1] !== snap) { history.push(snap); if (history.length > 60) history.shift(); }
+    if (history[history.length - 1] !== snap) { history.push(snap); if (history.length > 60) history.shift(); redoStack = []; }
     if (S.video) localStorage.setItem(`cs.project.${S.video.id}`, snap);
     else localStorage.setItem('cs.project.demo', snap);
   }, 300);
 }
+let redoStack = [];
+function flushCommit() {
+  clearTimeout(saveTimer);
+  const snap = snapshot();
+  if (history[history.length - 1] !== snap) { history.push(snap); if (history.length > 60) history.shift(); redoStack = []; }
+}
+function persist(snap) { if (S.video) localStorage.setItem(`cs.project.${S.video.id}`, snap); }
 function undo() {
+  flushCommit();
   if (history.length < 2) return;
-  history.pop();
+  redoStack.push(history.pop());
   restore(history[history.length - 1]);
-  if (S.video) localStorage.setItem(`cs.project.${S.video.id}`, history[history.length - 1]);
+  persist(history[history.length - 1]);
+}
+function redo() {
+  if (!redoStack.length) return;
+  const snap = redoStack.pop();
+  history.push(snap);
+  restore(snap);
+  persist(snap);
 }
 
 // ---------- Clock ----------
@@ -269,13 +284,13 @@ function frame(now) {
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   let t = currentTime() - S.offset;
-  let ch = chunkAt(t), ghost = false;
+  let ch = window.TL && TL.capsHidden() ? null : chunkAt(t), ghost = false;
   if (replay) {
     const rt = replay.chunk.start + (now - replay.t0) / 1000;
     if (rt >= replay.chunk.end) replay = null;
     else { t = rt; ch = replay.chunk; }
   }
-  if (!ch && !isPlaying() && S.chunks.length) {
+  if (!ch && !isPlaying() && S.chunks.length && !(window.TL && TL.capsHidden())) {
     ch = S.chunks[S.selected]; t = ch ? (ch.start + ch.end) / 2 : t; ghost = true;
   }
   bbox = ch ? drawChunk(ctx, W, H, ch, t, S.style, ch.pos || S.pos, { ghost }) : null;
@@ -1142,7 +1157,10 @@ document.querySelectorAll('.choice').forEach(b => b.addEventListener('click', ()
 document.addEventListener('keydown', e => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
   if (e.code === 'Space' && !typing) { e.preventDefault(); togglePlay(); }
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); }
+  const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (ctrl && !typing && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+  if (ctrl && !typing && key === 'y') { e.preventDefault(); redo(); }
+  if (window.TL) return; // the timeline has its own frame-by-frame keys
   if (!typing && e.key === 'ArrowRight') seek(currentTime() + 0.2);
   if (!typing && e.key === 'ArrowLeft') seek(currentTime() - 0.2);
 });
