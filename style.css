@@ -129,6 +129,7 @@ body.static .choice[data-mode=overlay] { display: none; }
 
 .vclist { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
 .vcitem { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.vcsteps { margin: 6px 0; padding-left: 20px; }
 .vcconsent { margin: 8px 0 2px; align-items: flex-start; }
 .notice-lic { color: #ffdf9e; background: #2a2210; border-color: #6b5519; }
 #tab-voice .lbl { margin-top: 8px; }

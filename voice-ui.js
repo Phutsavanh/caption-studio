@@ -3,7 +3,7 @@
 (function () {
   const base = () => (window.CS_BACKEND ? 'http://localhost:8097' : '');
   const $v = id => document.getElementById(id);
-  let voices = [], lastResult = null, polling = false;
+  let voices = [], lastResult = null, polling = false, retryTimer = null;
   const call = async (path, body, raw) => {
     const opt = body === undefined ? {} : raw
       ? { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body }
@@ -87,6 +87,7 @@
   }
   async function refresh() {
     try {
+      clearTimeout(retryTimer);
       const st = await call('/api/voice/status');
       if (!st.available) throw Object.assign(new Error('no engine'), { engine: true });
       voices = await call('/api/voice/presets');
@@ -100,9 +101,18 @@
       $v('vcMain').classList.add('hidden');
       box.innerHTML = e.engine
         ? '<b>ຄອມນີ້ຍັງບໍ່ໄດ້ຕິດຕັ້ງຕົວໂຄຣນສຽງ.</b>'
-        : `<b>ພາກສຽງໄດ້ຕອນເຊື່ອມກັບຄອມເທົ່ານັ້ນ.</b><p class="small">ຕົວໂຄຣນສຽງຕ້ອງໃຊ້ GPU ຈຶ່ງແລ່ນໃນໂທລະສັບບໍ່ໄດ້. ເປີດໂປຣແກຣມ Caption Studio ໃນຄອມ ແລ້ວເປີດໜ້ານີ້ໃນ Chrome ຂອງຄອມ. ຖ້າ Chrome ຖາມເລື່ອງເຄືອຂ່າຍໃນເຄື່ອງ ໃຫ້ກົດອະນຸຍາດ.</p><button id="vcRetry" class="wide">ລອງເຊື່ອມໃໝ່</button>`;
-      const retry = $v('vcRetry');
-      if (retry) retry.onclick = refresh;
+        : /Android|iPhone|iPad/i.test(navigator.userAgent)
+          ? `<b>ພາກສຽງໃນໂທລະສັບຍັງບໍ່ໄດ້.</b><p class="small">ຕົວໂຄຣນສຽງຕ້ອງໃຊ້ GPU ຂອງຄອມ. ໃຫ້ພາກໃນຄອມ ແລ້ວສົ່ງໄຟລ໌ສຽງມາໂທລະສັບ ແລະ ເພີ່ມດ້ວຍປຸ່ມ 🎵 ສຽງ ໃນໄທມ໌ລາຍ.</p>`
+          : `<b>ຍັງເຊື່ອມກັບໂປຣແກຣມໃນຄອມບໍ່ໄດ້.</b>
+             <ol class="small vcsteps">
+               <li>ເປີດ <b>Caption Studio</b> ໃນຄອມ (ໄອຄອນ ຫຼື ໄຟລ໌ CaptionStudio.exe) ແລະ ເປີດໜ້າຕ່າງສີດຳຄ້າງໄວ້.</li>
+               <li>ຖ້າ Windows ຂຶ້ນ "Windows protected your PC" ໃຫ້ກົດ More info → Run anyway.</li>
+               <li>ຖ້າ Chrome ຖາມເລື່ອງເຂົ້າເຖິງເຄືອຂ່າຍໃນເຄື່ອງ (local network) ໃຫ້ກົດ <b>Allow</b>.</li>
+             </ol>
+             <p class="small muted">ໜ້ານີ້ຈະລອງເຊື່ອມເອງທຸກ 3 ວິນາທີ.${e.message ? ` (${String(e.message).slice(0, 60)})` : ''}</p>`;
+      clearTimeout(retryTimer);
+      // Keep trying while this tab is open, so it connects as soon as the program starts.
+      if (!e.engine && !/Android|iPhone|iPad/i.test(navigator.userAgent)) retryTimer = setTimeout(refresh, 3000);
     }
   }
   async function savePreset() {
