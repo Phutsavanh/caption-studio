@@ -122,6 +122,19 @@
     }, { keepCaptions: true });
     select('overlay', T.overlays[T.overlays.length - 1].id);
   }
+  /** Starts over. The clips themselves stay on the device: only the project is cleared. */
+  function clearProject() {
+    pauseAll();
+    T.clips = []; T.overlays = []; T.audio = []; T.captionsFree = false;
+    media.clear();
+    els.clear(); auds.clear();
+    ui.selected = null; ui.clock = 0;
+    S.words = []; S.script = ''; S.draft = false;
+    $('script').value = '';
+    setNotice('');
+    rebuild();
+    syncVideo(); render(); renderInspector(); commit();
+  }
   function missingMedia() { return [...media.values()].filter(m => !m.file); }
   function relinkNotice() {
     const missing = missingMedia();
@@ -571,6 +584,7 @@
     box.id = 'tl';
     box.innerHTML = `
       <div class="tlbar">
+        <button id="tlNew" title="ລ້າງໄທມ໌ລາຍ ເພື່ອເລີ່ມໂປຣເຈັກໃໝ່">🗋 ໃໝ່</button>
         <button id="tlAdd" title="ເພີ່ມຄິບ ຫຼື ຮູບ">＋ ຄິບ</button>
         <button id="tlSplit" title="ຕັດຄິບຢູ່ເສັ້ນເວລາ">✂ ຕັດ</button>
         <button id="tlDelete" title="ລົບສິ່ງທີ່ເລືອກ">🗑</button>
@@ -610,6 +624,16 @@
     pick('tlAdd', 'tlPickClip', addFiles);
     pick('tlAddAudio', 'tlPickAudio', async files => { for (const f of files) addAudioItem(await addMedia(f), f.name); });
     pick('tlAddOverlay', 'tlPickOverlay', async files => { for (const f of files) await addOverlay(f); });
+    el('tlNew').onclick = () => {
+      const b = el('tlNew');
+      if (b.dataset.sure !== '1') { // a second press confirms, so one stray tap can't wipe the work
+        b.dataset.sure = '1'; b.textContent = 'ລ້າງແທ້ບໍ?';
+        setTimeout(() => { b.dataset.sure = ''; b.textContent = '🗋 ໃໝ່'; }, 3000);
+        return;
+      }
+      b.dataset.sure = ''; b.textContent = '🗋 ໃໝ່';
+      clearProject();
+    };
     el('tlSplit').onclick = split;
     el('tlDelete').onclick = removeSelected;
     el('tlDup').onclick = duplicate;
@@ -806,7 +830,7 @@
   }
 
   window.TL = {
-    init, load, serialize, tick, render, renderInspector, syncVideo, addFiles, addMedia, addAudioItem, edit, renderMix, exportVideo, stagePointer,
+    clearProject, init, load, serialize, tick, render, renderInspector, syncVideo, addFiles, addMedia, addAudioItem, edit, renderMix, exportVideo, stagePointer,
     isReady: () => !!S.video,
     duration: () => total(),
     time: () => ui.clock,

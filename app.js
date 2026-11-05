@@ -211,7 +211,13 @@ const isPlaying = () => (TLon() ? TL.playing() : S.video ? !video.paused : demoP
 function seek(t) { t = Math.max(0, Math.min(duration(), t)); if (TLon()) TL.seek(t); else if (S.video) video.currentTime = t; else demoT = t; replay = null; }
 function togglePlay() {
   replay = null;
-  if (S.video) { if (video.paused) video.play(); else video.pause(); } else demoPlaying = !demoPlaying;
+  if (TLon()) TL.toggle();
+  else if (S.video) { if (video.paused) video.play(); else video.pause(); } else demoPlaying = !demoPlaying;
+}
+function pausePlayback() {
+  if (TLon()) TL.pause();
+  else if (S.video) video.pause();
+  else demoPlaying = false;
 }
 const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
 const fmt2 = t => t.toFixed(2);
@@ -298,8 +304,7 @@ canvas.addEventListener('pointerdown', e => {
   const ch = S.chunks[S.selected];
   const base = $('dragOne').checked && ch ? (ch.pos || S.pos) : S.pos;
   drag = { what, p0: p, pos0: { ...base }, size0: S.style.size, w0: bbox.w };
-  if (video && S.video && !video.paused) video.pause();
-  demoPlaying = false;
+  pausePlayback();
 });
 canvas.addEventListener('pointermove', e => {
   const p = toCanvas(e);
@@ -335,7 +340,7 @@ canvas.addEventListener('wheel', e => {
 function selectChunk(i, doSeek = true) {
   const prev = S.selected;
   S.selected = i;
-  if (doSeek && S.chunks[i]) { seek(S.chunks[i].start + S.offset + 0.001); if (S.video) video.pause(); else demoPlaying = false; }
+  if (doSeek && S.chunks[i]) { seek(S.chunks[i].start + S.offset + 0.001); pausePlayback(); }
   if (prev !== i || doSeek) renderChunkList();
 }
 function chunkDom(c) {
@@ -503,7 +508,7 @@ function setStyle(k, v, replayIt) {
 function replayCurrent() {
   const ch = S.chunks[S.selected];
   if (!ch) return;
-  if (S.video) video.pause(); else demoPlaying = false;
+  pausePlayback();
   replay = { chunk: ch, t0: performance.now() };
 }
 function buildControl(c) {
@@ -921,7 +926,7 @@ async function runExport(mode, fps) {
   $('exportError').classList.add('hidden');
   if (mode === 'burn' && !S.video) { showExportError('ເປີດຄິບກ່ອນ ຈຶ່ງຈະສົ່ງອອກ MP4 ໄດ້'); return; }
   if (!S.chunks.length) { showExportError('ຍັງບໍ່ມີຟ້ອນ'); return; }
-  if (S.video) video.pause();
+  pausePlayback();
   exporting = true; exportCancelled = false;
   showExport('exportRun');
   const payload = {
