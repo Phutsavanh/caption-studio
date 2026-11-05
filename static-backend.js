@@ -56,6 +56,40 @@
   }
 
   // ---- Listening ---------------------------------------------------------------------------
+  async function probe(file) {
+    if (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
+      const bmp = await createImageBitmap(file);
+      const info = { kind: 'image', width: bmp.width, height: bmp.height, duration: 3600, hasAudio: false };
+      bmp.close();
+      return info;
+    }
+    const MB = await loadMb();
+    const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
+    try {
+      const v = await input.getPrimaryVideoTrack(), a = await input.getPrimaryAudioTrack();
+      if (!v && !a) throw new Error('none');
+      return { kind: v ? 'video' : 'audio', width: v ? v.displayWidth : 0, height: v ? v.displayHeight : 0, duration: await input.computeDuration(), hasAudio: !!a };
+    } catch { throw new Error(`ອ່ານໄຟລ໌ນີ້ບໍ່ໄດ້: ${file.name}`); } finally { input.dispose?.(); }
+  }
+  async function thumbnail(m) {
+    if (m.kind === 'audio') return null;
+    const toUrl = async cv => URL.createObjectURL(await cv.convertToBlob({ type: 'image/jpeg', quality: 0.6 }));
+    const cv = new OffscreenCanvas(64, 64), g = cv.getContext('2d');
+    if (m.kind === 'image') {
+      const bmp = await createImageBitmap(m.file);
+      g.drawImage(bmp, 0, 0, 64, 64); bmp.close();
+      return toUrl(cv);
+    }
+    const MB = await loadMb();
+    const input = new MB.Input({ source: new MB.BlobSource(m.file), formats: MB.ALL_FORMATS });
+    try {
+      const track = await input.getPrimaryVideoTrack();
+      const frame = await new MB.CanvasSink(track, { width: 64, height: 64, fit: 'cover' }).getCanvas(Math.min(0.2, m.duration / 2));
+      if (!frame) return null;
+      g.drawImage(frame.canvas, 0, 0);
+      return toUrl(cv);
+    } finally { input.dispose?.(); }
+  }
   async function extractPcm(file, onProgress) {
     const MB = await loadMb();
     const input = new MB.Input({ source: new MB.BlobSource(file), formats: MB.ALL_FORMATS });
@@ -84,9 +118,10 @@
 
   let worker = null;
   function cancelTranscribe() { if (worker) { worker.terminate(); worker = null; } }
-  async function transcribe(video, script, onStatus) {
+  async function transcribe(video, script, getPcm, onStatus) {
     onStatus('ກຳລັງແຍກສຽງ', 0);
-    const audio = await extractPcm(video.file, p => onStatus('ກຳລັງແຍກສຽງ', p));
+    const fresh = getPcm ? await getPcm() : await extractPcm(video.file, p => onStatus('ກຳລັງແຍກສຽງ', p));
+    const audio = new Float32Array(fresh); // its own buffer, so it can be handed to the worker
     return new Promise((ok, no) => {
       cancelTranscribe();
       worker = new Worker('ctc-worker.js', { type: 'module' });
@@ -166,15 +201,17 @@
       throw e;
     }
     if (isCancelled()) { await out.discard(); return null; }
-    const blob = await out.finish();
-    const file = new File([blob], `${video.name.replace(/\.[^.]+$/, '')}_caps.mp4`, { type: 'video/mp4' });
+    return finishExport(await out.finish(), `${video.name.replace(/\.[^.]+$/, '')}_caps.mp4`, codec);
+  }
+  function finishExport(blob, name, codec) {
+    const file = new File([blob], name, { type: 'video/mp4' });
     lastExportFile = file;
     return { file: file.name, size: file.size, url: URL.createObjectURL(file), blob: file, codec };
   }
   const shareLastExport = () => navigator.share({ files: [lastExportFile], title: lastExportFile.name });
   const canShare = () => !!(lastExportFile && navigator.canShare && navigator.canShare({ files: [lastExportFile] }));
 
-  window.CS_BACKEND = { fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
+  window.CS_BACKEND = { mediabunny: loadMb, openTarget, finishExport, probe, thumbnail, fonts, addFont, loadPresets, savePresets, openFile, transcribe, cancelTranscribe, exportMp4, shareLastExport, canShare };
 
   // The old Whisper model isn't used any more: give its 300 MB back to the phone.
   if (self.caches) ['transformers-cache', 'caption-studio-v1'].forEach(name => caches.delete(name).catch(() => {}));

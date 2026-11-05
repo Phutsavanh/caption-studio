@@ -169,14 +169,18 @@ function rebuild() {
   S.chunks = chunks;
   S.selected = Math.min(S.selected, Math.max(0, chunks.length - 1));
   renderChunkList();
+  if (window.TL) TL.render();
 }
 const chunkAt = t => S.chunks.find(c => t >= c.start && t < c.end) || null;
 
 // ---------- History & persistence ----------
-const snapshot = () => JSON.stringify({ words: S.words, n: S.n, countMode: S.countMode, style: S.style, pos: S.pos, offset: S.offset, presetId: S.presetId, draft: S.draft, script: S.script });
+const snapshot = () => JSON.stringify({ tl: window.TL ? TL.serialize() : null, words: S.words, n: S.n, countMode: S.countMode, style: S.style, pos: S.pos, offset: S.offset, presetId: S.presetId, draft: S.draft, script: S.script });
 let history = [], saveTimer = null;
 function restore(json) {
-  Object.assign(S, JSON.parse(json));
+  const parsed = JSON.parse(json), tlState = parsed.tl;
+  delete parsed.tl;
+  Object.assign(S, parsed);
+  if (window.TL && tlState) TL.load(tlState);
   syncControls();
   rebuild();
   renderStylePanels();
@@ -200,10 +204,11 @@ function undo() {
 }
 
 // ---------- Clock ----------
-const duration = () => (S.video ? S.video.duration || video.duration || 1 : 9);
-const currentTime = () => (S.video ? video.currentTime : demoT);
-const isPlaying = () => (S.video ? !video.paused : demoPlaying);
-function seek(t) { t = Math.max(0, Math.min(duration(), t)); if (S.video) video.currentTime = t; else demoT = t; replay = null; }
+const TLon = () => !!(window.TL && S.video && S.video.tl);
+const duration = () => (TLon() ? TL.duration() || 1 : S.video ? S.video.duration || video.duration || 1 : 9);
+const currentTime = () => (TLon() ? TL.time() : S.video ? video.currentTime : demoT);
+const isPlaying = () => (TLon() ? TL.playing() : S.video ? !video.paused : demoPlaying);
+function seek(t) { t = Math.max(0, Math.min(duration(), t)); if (TLon()) TL.seek(t); else if (S.video) video.currentTime = t; else demoT = t; replay = null; }
 function togglePlay() {
   replay = null;
   if (S.video) { if (video.paused) video.play(); else video.pause(); } else demoPlaying = !demoPlaying;
@@ -253,6 +258,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = (now - lastTick) / 1000; lastTick = now;
   if (!S.video && demoPlaying && !exporting) { demoT += dt; if (demoT >= duration()) demoT = 0; }
+  if (window.TL) TL.tick(now);
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
   let t = currentTime() - S.offset;
@@ -284,7 +290,9 @@ function hit(p) {
   return p.x > bbox.x - pad && p.x < bbox.x + bbox.w + pad && p.y > bbox.y - pad && p.y < bbox.y + bbox.h + pad ? 'move' : null;
 }
 canvas.addEventListener('pointerdown', e => {
-  const p = toCanvas(e), what = hit(p);
+  const p = toCanvas(e);
+  if (TLon() && TL.stagePointer('down', p, canvas.width, canvas.height)) { canvas.setPointerCapture(e.pointerId); return; }
+  const what = hit(p);
   if (!what) { togglePlay(); return; }
   canvas.setPointerCapture(e.pointerId);
   const ch = S.chunks[S.selected];
@@ -295,6 +303,7 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   const p = toCanvas(e);
+  if (TLon() && TL.stagePointer('move', p, canvas.width, canvas.height)) return;
   if (!drag) { canvas.style.cursor = hit(p) === 'resize' ? 'nwse-resize' : hit(p) ? 'move' : 'pointer'; return; }
   if (drag.what === 'resize') {
     const k = 1 + (p.x - drag.p0.x) / Math.max(40, drag.w0 / 2);
@@ -311,7 +320,7 @@ canvas.addEventListener('pointermove', e => {
     markPosSeg();
   }
 });
-const endDrag = () => { if (drag) { drag = null; snapGuide = false; renderChunkList(); commit(); } };
+const endDrag = () => { if (TLon() && TL.stagePointer('up', {}, 1, 1)) return; if (drag) { drag = null; snapGuide = false; renderChunkList(); commit(); } };
 canvas.addEventListener('pointerup', endDrag);
 canvas.addEventListener('pointercancel', endDrag);
 canvas.addEventListener('wheel', e => {
@@ -582,7 +591,9 @@ function renderStylePanels() {
       host.appendChild(g);
     });
   };
+  const posKeep = document.querySelector('#tab-decor .posbar');
   build($('tab-decor'), DECOR, true);
+  if (posKeep) $('tab-decor').prepend(posKeep);
   build($('tab-anim'), ANIM, false);
 }
 
@@ -795,14 +806,14 @@ document.addEventListener('drop', async e => {
   const f = e.dataTransfer.files[0];
   if (!f) return;
   if (/\.(srt|vtt)$/i.test(f.name)) { importSrt(f).catch(err => setNotice(err.message, 'bad')); return; }
-  try { await loadVideo(B ? await B.openFile(f) : await uploadFile(f), f); } catch (err) { setNotice(err.message, 'bad'); }
+  try { if (B) await TL.addFiles(e.dataTransfer.files); else await loadVideo(await uploadFile(f), f); } catch (err) { setNotice(err.message, 'bad'); }
 });
 $('fileInput').addEventListener('change', async e => {
-  const f = e.target.files[0];
+  const f = e.target.files[0], all = [...e.target.files];
   e.target.value = '';
   if (!f) return;
   $('btnOpen').disabled = true;
-  try { await loadVideo(B ? await B.openFile(f) : await uploadFile(f), f); } catch (err) { setNotice(err.message, 'bad'); } finally { $('btnOpen').disabled = false; }
+  try { if (B) await TL.addFiles(all); else await loadVideo(await uploadFile(f), f); } catch (err) { setNotice(err.message, 'bad'); } finally { $('btnOpen').disabled = false; }
 });
 
 // ---------- Auto captions ----------
@@ -831,7 +842,7 @@ async function listenOnDevice() {
   box.classList.remove('hidden');
   return new Promise((ok, no) => {
     $('jobCancel').onclick = () => { cancelled = true; B.cancelTranscribe(); no(new Error('ຍົກເລີກແລ້ວ')); };
-    B.transcribe(S.video, S.script, (label, p) => {
+    B.transcribe(S.video, S.script, TLon() ? () => TL.renderMix(16000, 1, { excludeMusic: true }).then(b => b.getChannelData(0)) : null, (label, p) => {
       $('jobBar').style.width = `${Math.round(p * 100)}%`;
       $('jobText').textContent = /MB$/.test(label) ? label : `${label} ${Math.round(p * 100)}%`;
     }).then(r => { if (!cancelled) ok(r); }, e => { if (!cancelled) no(e); });
@@ -858,9 +869,7 @@ async function decodeTextFile(file) {
   if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(buf);
   return new TextDecoder('utf-8').decode(buf);
 }
-async function importSrt(file) {
-  const entries = parseSrt(await decodeTextFile(file));
-  if (!entries.length) { setNotice('ອ່ານໄຟລ໌ນີ້ບໍ່ໄດ້ ຫຼື ບໍ່ມີຂໍ້ຄວາມ ກະລຸນາກວດວ່າເປັນໄຟລ໌ .srt', 'bad'); return; }
+function applyTimedLines(entries) {
   const words = [];
   entries.forEach((e, k) => {
     const ws = wordsFromLine({ text: e.text, times: [[0, e.start], [e.text.length, e.end]] }, k, S.countMode, e.end);
@@ -873,6 +882,12 @@ async function importSrt(file) {
   $('script').value = S.script;
   rebuild();
   showTab('text');
+  commit();
+}
+async function importSrt(file) {
+  const entries = parseSrt(await decodeTextFile(file));
+  if (!entries.length) { setNotice('ອ່ານໄຟລ໌ນີ້ບໍ່ໄດ້ ຫຼື ບໍ່ມີຂໍ້ຄວາມ ກະລຸນາກວດວ່າເປັນໄຟລ໌ .srt', 'bad'); return; }
+  applyTimedLines(entries);
   const last = entries[entries.length - 1].end;
   if (S.video && last > duration() + 0.5) setNotice(`⚠ ເປີດ ${entries.length} ແຖວແລ້ວ ແຕ່ເວລາໃນໄຟລ໌ຍາວກວ່າຄິບ (${fmt(last)} ກັບ ${fmt(duration())}) ອາດບໍ່ແມ່ນຄູ່ກັນ`);
   else setNotice(`✓ ເປີດ ${file.name} ແລ້ວ: ${entries.length} ແຖວ ໃຊ້ເວລາຕາມໄຟລ໌`, 'good');
@@ -925,7 +940,7 @@ async function runExport(mode, fps) {
     const onPc = S.remote && !B ? await api('/api/export/pc', payload) : null;
     if (B) {
       await ensureFont();
-      const res = await B.exportMp4(payload, S.video, progress, () => exportCancelled);
+      const res = await (TLon() ? TL.exportVideo(payload, progress, () => exportCancelled) : B.exportMp4(payload, S.video, progress, () => exportCancelled));
       if (res) showExportResult(res); else showExport('exportChoices');
     } else if (onPc && onPc.job) {
       exportCancelHook = () => api(`/api/job/${onPc.job}/cancel`, {});
@@ -1016,9 +1031,13 @@ $('tabs').addEventListener('click', e => { const b = e.target.closest('button');
 // On a phone the preset gallery lives in its own tab under the clip.
 const narrow = matchMedia('(max-width: 1050px)');
 function placePresets() {
-  if (narrow.matches) $('tab-style').appendChild($('left'));
-  else {
+  const posbar = document.querySelector('.posbar');
+  if (narrow.matches) {
+    $('tab-style').appendChild($('left'));
+    if (document.body.classList.contains('static') || B) $('tab-decor').prepend(posbar); // gives the picture more room
+  } else {
     document.querySelector('main').prepend($('left'));
+    document.querySelector('.transport').after(posbar);
     if (document.querySelector('#tabs button.on').dataset.tab === 'style') showTab('text');
   }
 }
@@ -1093,6 +1112,8 @@ document.addEventListener('keydown', e => {
   try { myPresets = B ? await B.loadPresets() : await api('/api/presets'); } catch { myPresets = []; }
   renderPresets();
   renderStylePanels();
+  if (window.TL) TL.init();
+  if (window.VoiceUI) VoiceUI.init();
   const savedDemo = localStorage.getItem('cs.project.demo');
   S.words = linesToWords(evenLines(DEMO_SCRIPT, 8.5), 8.5, S.countMode);
   rebuild();
@@ -1101,6 +1122,10 @@ document.addEventListener('keydown', e => {
   fitStage();
   ensureFont();
   commit();
+  if (B) {
+    const saved = localStorage.getItem('cs.project.timeline');
+    if (saved) { try { restore(saved); $('script').value = S.script || ''; if (TL.hasMissing()) TL.relinkNotice(); } catch { /* start fresh */ } }
+  }
   const last = B ? null : localStorage.getItem('cs.last');
   if (last) { try { await loadVideo(await api(`/api/video/${last}`)); } catch { localStorage.removeItem('cs.last'); } }
   requestAnimationFrame(frame);

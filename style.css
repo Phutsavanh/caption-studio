@@ -119,13 +119,46 @@ h3 { font-size: 13px; color: var(--muted); margin: 6px 0 8px; font-weight: 700; 
 .staticOnly { display: none; margin: 6px 0 0; }
 body.static .staticOnly { display: block; }
 body.remote #btnPhone, body.remote #exportReveal { display: none; }
-body.static .choice[data-mode=overlay], body.static #fpsSeg, body.static #fpsSeg ~ *, body.static .row:has(> #fpsSeg) { display: none; }
+body.static .choice[data-mode=overlay] { display: none; }
 .linkbtn { font: inherit; color: #fff; background: var(--blue); border-radius: 8px; padding: 5px 12px; text-align: center; text-decoration: none; font-weight: 700; }
 .files { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; max-height: 150px; overflow-y: auto; }
 .files a { color: #9cc2ff; font-size: 13px; word-break: break-all; }
 .qrs { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin: 10px 0; min-height: 60px; }
 .qr { text-align: center; }
 .qr svg { width: 180px; height: 180px; display: block; border-radius: 8px; background: #fff; }
+
+.vclist { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.vcitem { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.vcconsent { margin: 8px 0 2px; align-items: flex-start; }
+.notice-lic { color: #ffdf9e; background: #2a2210; border-color: #6b5519; }
+#tab-voice .lbl { margin-top: 8px; }
+#vcAudio { width: 100%; margin-top: 8px; }
+.linkbtn.alt { background: var(--panel2); border: 1px solid var(--line); font-weight: 400; }
+.webOnly { display: none; }
+body.static .webOnly { display: block; }
+#baseCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#tl { flex: none; background: #15171c; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.tlbar { display: flex; gap: 4px; align-items: center; padding: 4px 6px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.tlbar button { padding: 3px 9px; font-size: 13px; }
+#tlTracks { overflow-x: auto; overflow-y: hidden; height: 148px; position: relative; -webkit-overflow-scrolling: touch; }
+#tlInner { position: relative; height: 100%; min-width: 100%; }
+#tlRuler { position: relative; height: 18px; background: #0f1115; cursor: pointer; touch-action: none; user-select: none; }
+#tlRuler b { position: absolute; top: 2px; font: 10px Consolas, monospace; color: var(--muted); padding-left: 3px; border-left: 1px solid #3a404c; }
+.tltrack { position: relative; height: 44px; margin-top: 2px; }
+.tltrack.slim { height: 28px; }
+.tltrack.caps { height: 14px; }
+.tlb { position: absolute; top: 0; bottom: 0; border-radius: 5px; overflow: hidden; border: 1px solid rgba(255,255,255,.2); background: #2d4f86 center left / auto 100% repeat-x; cursor: pointer; user-select: none; }
+.tlb.overlay { background-color: #6a3f96; }
+.tlb.audio { background: #1f6a53; }
+.tlb.on { border: 2px solid #ffd21e; touch-action: none; z-index: 2; }
+.tlb.missing { background: repeating-linear-gradient(45deg, #5c1f25, #5c1f25 6px, #3a1417 6px, #3a1417 12px); }
+.tlb span { position: absolute; left: 4px; bottom: 1px; right: 4px; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.tlb em { position: absolute; left: 2px; top: 1px; font-size: 11px; font-style: normal; pointer-events: none; }
+.tlb .h { position: absolute; top: 0; bottom: 0; width: 14px; background: #ffd21e; cursor: ew-resize; touch-action: none; }
+.tlb .h.l { left: 0; } .tlb .h.r { right: 0; }
+.tlcap { position: absolute; top: 2px; height: 9px; background: #e5141f; border-radius: 2px; pointer-events: none; }
+#tlHead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; z-index: 5; box-shadow: 0 0 3px #000; }
+body:not(.static) #tl { display: none; }
 
 /* Phones and narrow windows: clip on top, one scrolling panel below. */
 @media (max-width: 1050px) {
@@ -139,6 +172,11 @@ body.static .choice[data-mode=overlay], body.static #fpsSeg, body.static #fpsSeg
   #btnExport { margin-left: auto; }
   main { display: flex; flex-direction: column; overflow: hidden; }
   #center { flex: 0 0 auto; height: 50dvh; padding: 6px 8px 4px; gap: 4px; }
+  body.static #center { height: 64dvh; }
+  #tlTracks { height: 118px; }
+  .tltrack { height: 34px; } .tltrack.slim { height: 22px; } .tltrack.caps { height: 10px; }
+  .tlbar button { min-height: 30px; padding: 2px 7px; }
+  .tabs button { font-size: 12.5px; }
   .posbar { gap: 8px; font-size: 12px; flex-wrap: nowrap; overflow-x: auto; }
   .posbar .small { display: none; }
   .posbar label { white-space: nowrap; }
