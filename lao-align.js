@@ -167,5 +167,66 @@
     return { draft: true, duration, lines: out };
   }
 
-  root.LaoAlign = { alignChars, thai2lao, buildResult, buildResultFromChars, skel, lao2thai };
+  /** Forced alignment: since the words are already known, find the moment each letter is spoken directly in the
+      speech model's frame scores (Viterbi), instead of comparing against its own possibly misheard text.
+      logp: frames x classes log-probabilities; times: seconds of each frame. Letters the model doesn't know
+      (Latin, digits) get no anchor and are timed between their neighbours. */
+  const MIN_LETTER_SCORE = -3.5; // measured: matching script about -1 to -2, wrong script about -5 to -7
+  function forcedAlign(script, logp, frames, classes, times, vocab, duration) {
+    const lines = script.split('\n').map(l => l.trim()).filter(Boolean);
+    const idOf = new Map();
+    vocab.id2char.forEach((c, i) => { if (![...c].some(x => x === '<' || x === '>')) idOf.set(c, i); });
+    const delim = vocab.id2char.indexOf(vocab.delim);
+    const toks = [], line = [], charAt = [];
+    lines.forEach((ln, li) => {
+      let ci = 0;
+      for (const ch of ln) {
+        const id = idOf.get(ch);
+        if (id != null && id !== delim) { toks.push(id); line.push(li); charAt.push(ci); }
+        ci += ch.length;
+      }
+    });
+    const n = toks.length;
+    if (!n || !frames || frames * (n + 1) > 4e8) return null;
+    const stay = new Float32Array(frames);
+    for (let f = 0; f < frames; f++) {
+      const o = f * classes;
+      stay[f] = Math.max(logp[o + vocab.pad], delim >= 0 ? logp[o + delim] : -Infinity);
+    }
+    const moved = new Uint8Array(frames * (n + 1)); // 1 = entered this letter on this frame
+    let prev = new Float32Array(n + 1).fill(-Infinity), cur = new Float32Array(n + 1);
+    prev[0] = 0;
+    for (let f = 0; f < frames; f++) {
+      const o = f * classes, row = f * (n + 1);
+      cur[0] = prev[0] + stay[f];
+      for (let j = 1; j <= n; j++) {
+        const tok = logp[o + toks[j - 1]];
+        const keep = prev[j] + Math.max(stay[f], tok);
+        const enter = prev[j - 1] + tok;
+        if (enter > keep) { cur[j] = enter; moved[row + j] = 1; } else cur[j] = keep;
+      }
+      [prev, cur] = [cur, prev];
+    }
+    // Walk back from the end to get the frame each letter starts on.
+    const startFrame = new Int32Array(n);
+    let j = n;
+    for (let f = frames - 1; f >= 0 && j > 0; f--) {
+      if (moved[f * (n + 1) + j]) { startFrame[j - 1] = f; j--; }
+    }
+    const perLine = lines.map(() => []);
+    const scores = lines.map(() => [0, 0]);
+    for (let k = 0; k < n; k++) {
+      const f = startFrame[k];
+      perLine[line[k]].push([charAt[k], Math.round(times[f] * 1000) / 1000]);
+      scores[line[k]][0] += logp[f * classes + toks[k]];
+      scores[line[k]][1]++;
+    }
+    return {
+      draft: false,
+      duration,
+      lines: lines.map((text, i) => ({ text, times: perLine[i], score: scores[i][1] ? scores[i][0] / scores[i][1] : -99, anchored: scores[i][1] > 0 && scores[i][0] / scores[i][1] > MIN_LETTER_SCORE })),
+    };
+  }
+
+  root.LaoAlign = { forcedAlign, alignChars, thai2lao, buildResult, buildResultFromChars, skel, lao2thai };
 })(typeof self !== 'undefined' ? self : window);

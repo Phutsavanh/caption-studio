@@ -874,6 +874,20 @@ async function decodeTextFile(file) {
   if (b[0] === 0xFE && b[1] === 0xFF) return new TextDecoder('utf-16be').decode(buf);
   return new TextDecoder('utf-8').decode(buf);
 }
+/** Word times measured from the audio. `lines` carry the real start/end of each spoken line. */
+function applyAlignedLines(aligned, offset, lines) {
+  const words = [];
+  aligned.forEach((l, k) => {
+    const e = lines[k];
+    const times = l.anchored && l.times.length ? l.times.map(([i, t]) => [i, t + offset]) : [[0, e.start], [e.text.length, e.end]];
+    const ws = wordsFromLine({ text: l.text, times }, k, S.countMode, e.end);
+    if (ws.length) ws[ws.length - 1].end = e.end;
+    words.push(...ws);
+  });
+  S.words = words;
+  rebuild();
+  commit();
+}
 function applyTimedLines(entries) {
   const words = [];
   entries.forEach((e, k) => {

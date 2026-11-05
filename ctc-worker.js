@@ -3,6 +3,8 @@
    Thai-to-Lao conversion is needed. The model downloads once in parts, then stays in the browser cache. */
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/ort.wasm.bundle.min.mjs';
 
+import './lao-align.js';
+
 const SR = 16000, FRAME = 0.02, CACHE = 'caption-studio-model-v1';
 let session = null, vocab = null;
 
@@ -94,7 +96,8 @@ self.onmessage = async ({ data }) => {
   try {
     await load(data.base);
     self.postMessage({ type: 'ready', threads: ort.env.wasm.numThreads });
-    const audio = data.audio, chars = [], win = windows(audio);
+    const audio = data.audio, chars = [], win = windows(audio), keep = [], stamps = [];
+    let frames = 0, classes = 0;
     for (let w = 0; w < win.length; w++) {
       const [a, b] = win[w];
       if (b - a < SR / 4) continue;
@@ -102,11 +105,32 @@ self.onmessage = async ({ data }) => {
       const out = await session.run({ input_values: input });
       const logits = out.logits;
       decode(logits.data, logits.dims[1], logits.dims[2], a / SR, chars);
+      if (data.script) {
+        // Keep normalised frame scores: the script is lined up against the whole clip at the end.
+        const F = logits.dims[1], C = logits.dims[2], src = logits.data, lp = new Float32Array(F * C);
+        for (let f = 0; f < F; f++) {
+          let top = -Infinity;
+          for (let c = 0; c < C; c++) if (src[f * C + c] > top) top = src[f * C + c];
+          let sum = 0;
+          for (let c = 0; c < C; c++) sum += Math.exp(src[f * C + c] - top);
+          const log = Math.log(sum);
+          for (let c = 0; c < C; c++) lp[f * C + c] = src[f * C + c] - top - log;
+          stamps.push(a / SR + f * FRAME);
+        }
+        keep.push(lp); frames += F; classes = C;
+      }
       input.dispose?.();
       logits.dispose?.();
       self.postMessage({ type: 'progress', p: b / audio.length });
     }
-    self.postMessage({ type: 'done', chars });
+    let aligned = null;
+    if (data.script && frames) {
+      const all = new Float32Array(frames * classes);
+      let at = 0;
+      for (const lp of keep) { all.set(lp, at); at += lp.length; }
+      aligned = self.LaoAlign.forcedAlign(data.script, all, frames, classes, stamps, vocab, audio.length / SR);
+    }
+    self.postMessage({ type: 'done', chars, aligned });
   } catch (e) {
     self.postMessage({ type: 'error', error: e.message || String(e) });
   }

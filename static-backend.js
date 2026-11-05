@@ -132,10 +132,10 @@
         else if (data.type === 'progress') onStatus('ກຳລັງຟັງສຽງ', data.p);
         else if (data.type === 'done') {
           cancelTranscribe();
-          ok(window.LaoAlign.buildResultFromChars(script || '', data.chars, video.duration));
+          ok(data.aligned || window.LaoAlign.buildResultFromChars(script || '', data.chars, video.duration));
         } else if (data.type === 'error') { cancelTranscribe(); no(new Error(`ຟັງສຽງບໍ່ສຳເລັດ ກະລຸນາກວດເນັດແລ້ວລອງໃໝ່ (${data.error})`)); }
       };
-      worker.postMessage({ audio, base: new URL('./', location.href).href }, [audio.buffer]);
+      worker.postMessage({ audio, base: new URL('./', location.href).href, script: (script || '').trim() }, [audio.buffer]);
     });
   }
 

@@ -232,8 +232,9 @@
     ui.lastNow = now;
     const tot = total();
     if (ui.playing) {
-      ui.clock += Math.min(dt, 0.25);
-      if (ui.clock >= tot) { ui.clock = tot; ui.playing = false; }
+      const heard = soundClock();
+      ui.clock = heard != null ? heard : ui.clock + Math.min(dt, 0.25);
+      if (ui.clock >= tot) { ui.clock = tot; ui.playing = false; pauseAll(); }
     }
     const lay = layout(), t = ui.clock;
     const r = base.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -268,6 +269,22 @@
     syncAudio(t);
     compose(bctx, W, H, t, lay, previewSource);
     drawPlayhead(t, tot);
+  }
+  /** The playing element's own position is the truth: a timer drifts away from what you actually hear. */
+  function soundClock() {
+    const t = ui.clock;
+    const running = e => e && !e.paused && !e.seeking && e.readyState >= 3;
+    for (const a of T.audio) {
+      if (a.kind !== 'voice' || t < a.start || t >= a.start + (a.out - a.in)) continue;
+      const e = auds.get(a.id);
+      if (running(e)) return a.start + (e.currentTime - a.in);
+    }
+    for (const it of layout().items) {
+      if (t < it.start || t >= it.end) continue;
+      const e = els.get(it.clip.id);
+      if (it.overlap <= 0 && running(e) && e.tagName === 'VIDEO' && !it.clip.muted) return it.start + (e.currentTime - it.clip.in) / it.clip.speed;
+    }
+    return null;
   }
   function syncAudio(t) {
     for (const a of T.audio) {

@@ -38,7 +38,7 @@
         <div class="card">
           <label class="lbl">ສະຄຣິບທີ່ຈະພາກ <span class="muted small">(ຂຶ້ນແຖວໃໝ່ = ຢຸດພັກສັ້ນໆ)</span></label>
           <textarea id="vcScript" rows="6" placeholder="ວາງສະຄຣິບລາວຢູ່ນີ້"></textarea>
-          <div class="ctl"><span>ຄວາມໄວ</span><input id="vcSpeed" type="range" min="0.7" max="1.3" step="0.05" value="1"><output id="vcSpeedOut">1.00</output></div>
+          <div class="ctl"><span>ຄວາມໄວ</span><input id="vcSpeed" type="range" min="0.6" max="1.5" step="0.05" value="1"><output id="vcSpeedOut">1.00</output></div>
           <button id="vcGo" class="primary wide">🎙 ພາກສຽງ</button>
           <div id="vcJob" class="hidden"><div class="bar"><i id="vcBar"></i></div><div id="vcJobText" class="small muted"></div></div>
           <div id="vcResult" class="hidden">
@@ -165,8 +165,25 @@
     const start = TL.duration() > 0 && TL.time() < TL.duration() ? TL.time() : 0;
     TL.addAudioItem(m, lastResult.file, { start, kind: 'voice', volume: 1 });
     TL.setCaptionsFree(true);
-    applyTimedLines(lastResult.lines.map(l => ({ text: l.text, start: l.start + start, end: l.end + start })));
-    say('✓ ໃສ່ສຽງພາກ ແລະ ຟ້ອນໃນໄທມ໌ລາຍແລ້ວ', 'good');
+    const lines = lastResult.lines.map(l => ({ text: l.text, start: l.start + start, end: l.end + start }));
+    applyTimedLines(lines);
+    say('ກຳລັງຈັບເວລາແຕ່ລະຄຳກັບສຽງ...');
+    $v('vcUse').disabled = true;
+    try {
+      const ctx = new OfflineAudioContext(1, Math.ceil(lastResult.duration * 16000) + 16000, 16000);
+      const src = ctx.createBufferSource();
+      src.buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+      src.connect(ctx.destination);
+      src.start();
+      const pcm = (await ctx.startRendering()).getChannelData(0);
+      const res = await window.CS_BACKEND.transcribe({ duration: lastResult.duration }, lines.map(l => l.text).join('\n'), async () => pcm, (label, p) => {
+        say(/MB$/.test(label) ? label : `ກຳລັງຈັບເວລາແຕ່ລະຄຳກັບສຽງ ${Math.round(p * 100)}%`);
+      });
+      applyAlignedLines(res.lines, start, lines);
+      say('✓ ໃສ່ສຽງພາກ ແລະ ຟ້ອນແລ້ວ ເວລາແຕ່ລະຄຳຈັບຈາກສຽງຈິງ', 'good');
+    } catch (e) {
+      say(`ໃສ່ສຽງພາກແລ້ວ ແຕ່ຈັບເວລາລະດັບຄຳບໍ່ສຳເລັດ ຈຶ່ງໃຊ້ເວລາລະດັບແຖວແທນ (${e.message})`);
+    } finally { $v('vcUse').disabled = false; }
   }
   window.VoiceUI = { init() { shell(); refresh(); }, refresh };
 })();
