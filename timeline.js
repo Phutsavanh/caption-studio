@@ -678,7 +678,12 @@
       done++;
       if (onProgress) onProgress(done / jobs.length);
     }
-    return ctx.startRendering();
+    const mixed = await ctx.startRendering();
+    // Voice, clip sound and music can add up past full scale: turn the whole mix down instead of letting it distort.
+    let peak = 0;
+    for (let c = 0; c < mixed.numberOfChannels; c++) { const d = mixed.getChannelData(c); for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > peak) peak = v; } }
+    if (peak > 0.97) { const k = 0.97 / peak; for (let c = 0; c < mixed.numberOfChannels; c++) { const d = mixed.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= k; } }
+    return mixed;
   }
 
   // ---------- Export ----------
