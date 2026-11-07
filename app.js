@@ -16,7 +16,7 @@ const S = {
   presetId: 'classic99', selected: 0, draft: false, demo: true, script: '',
 };
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d'), stage = $('stage');
-let myPresets = [], fontsList = [], demoT = 0, demoPlaying = true, lastTick = performance.now(), replay = null, bbox = null, drag = null, snapGuide = false;
+let myPresets = [], fontsList = [], demoT = 0, demoPlaying = true, lastTick = performance.now(), replay = null, bbox = null, drag = null, snapGuide = false, drawnChunk = null;
 
 // ---------- Tokenising: split Lao only at real word boundaries, never by character count ----------
 const segmenter = new Intl.Segmenter('lo', { granularity: 'word' });
@@ -294,6 +294,7 @@ function frame(now) {
     ch = S.chunks[S.selected]; t = ch ? (ch.start + ch.end) / 2 : t; ghost = true;
   }
   bbox = ch ? drawChunk(ctx, W, H, ch, t, S.style, ch.pos || S.pos, { ghost }) : null;
+  drawnChunk = ch;
   if (ch && !ghost && ch.idx !== S.selected && isPlaying()) selectChunk(ch.idx, false);
   drawOverlayUI(t);
   if (!scrubbing) $('scrub').value = Math.round(currentTime() / duration() * 1000);
@@ -308,6 +309,8 @@ function hit(p) {
   if (!bbox) return null;
   const hx = bbox.x + bbox.w + 10, hy = bbox.y + bbox.h + 10;
   const k = canvas.width / canvas.getBoundingClientRect().width, grab = (S.remote ? 30 : 22) * k, pad = 16 * k;
+  // Inside the text always moves it, so a short caption is not taken over by the resize corner.
+  if (p.x > bbox.x && p.x < bbox.x + bbox.w && p.y > bbox.y && p.y < bbox.y + bbox.h) return 'move';
   if (Math.hypot(p.x - hx, p.y - hy) < grab) return 'resize';
   return p.x > bbox.x - pad && p.x < bbox.x + bbox.w + pad && p.y > bbox.y - pad && p.y < bbox.y + bbox.h + pad ? 'move' : null;
 }
@@ -317,6 +320,13 @@ canvas.addEventListener('pointerdown', e => {
   const what = hit(p);
   if (!what) { togglePlay(); return; }
   canvas.setPointerCapture(e.pointerId);
+  // Captions selected on the timeline move together; the others stay where they are.
+  const group = what === 'move' && TLon() && drawnChunk ? TL.selectedCaptions() : [];
+  if (group.length && group.includes(drawnChunk)) {
+    drag = { what: 'group', p0: p, items: group.map(c => ({ c, pos0: { ...(c.pos || S.pos) } })) };
+    pausePlayback();
+    return;
+  }
   const ch = S.chunks[S.selected];
   const base = $('dragOne').checked && ch ? (ch.pos || S.pos) : S.pos;
   drag = { what, p0: p, pos0: { ...base }, size0: S.style.size, w0: bbox.w };
@@ -326,6 +336,16 @@ canvas.addEventListener('pointermove', e => {
   const p = toCanvas(e);
   if (TLon() && TL.stagePointer('move', p, canvas.width, canvas.height)) return;
   if (!drag) { canvas.style.cursor = hit(p) === 'resize' ? 'nwse-resize' : hit(p) ? 'move' : 'pointer'; return; }
+  if (drag.what === 'group') {
+    const dx = (p.x - drag.p0.x) / canvas.width, dy = (p.y - drag.p0.y) / canvas.height;
+    for (const { c, pos0 } of drag.items) {
+      const pos = { x: Math.max(0.02, Math.min(0.98, pos0.x + dx)), y: Math.max(0.02, Math.min(0.98, pos0.y + dy)) };
+      c.words.forEach(w => delete w.pos);
+      c.words[0].pos = pos;
+      c.pos = pos;
+    }
+    return;
+  }
   if (drag.what === 'resize') {
     const k = 1 + (p.x - drag.p0.x) / Math.max(40, drag.w0 / 2);
     S.style.size = Math.round(Math.max(24, Math.min(260, drag.size0 * k)));
@@ -451,9 +471,9 @@ function retimeChunk(c, a, b) {
 
 // ---------- Style panels ----------
 const opts = (o) => Object.entries(o).map(([v, l]) => ({ v, l }));
-const LABEL_IN = { none: 'ບໍ່ມີ', pop: 'ປັອບ', bounce: 'ເດັ້ງ', slam: 'ກະແທກ', zoomIn: 'ຊູມເຂົ້າ', fade: 'ຄ່ອຍໆຂຶ້ນ', slideUp: 'ຂຶ້ນຈາກລຸ່ມ', slideDown: 'ລົງຈາກເທິງ', slideLeft: 'ເຂົ້າຈາກຂວາ', slideRight: 'ເຂົ້າຈາກຊ້າຍ', drop: 'ຕົກລົງ', flip: 'ພິກ', stretch: 'ຍືດ', swing: 'ແກວ່ງ', spin: 'ໝຸນ', blurIn: 'ມົວໄປຊັດ', wipe: 'ປາດເຂົ້າ', typewriter: 'ພິມດີດ', glitch: 'ກລິດຊ໌' };
-const LABEL_OUT = { none: 'ບໍ່ມີ', fade: 'ຄ່ອຍໆຫາຍ', popOut: 'ຫົດຫາຍ', zoomOut: 'ຊູມອອກ', slideUp: 'ຂຶ້ນເທິງ', slideDown: 'ລົງລຸ່ມ', blurOut: 'ມົວຫາຍ' };
-const LABEL_LOOP = { none: 'ບໍ່ມີ', float: 'ລອຍ', pulse: 'ເຕັ້ນ', shake: 'ສັ່ນ', wave: 'ຄື້ນ', swing: 'ໂຍກ', flicker: 'ກະພິບ', glitch: 'ກລິດຊ໌' };
+const LABEL_IN = { none: 'ບໍ່ມີ', pop: 'ປັອບ', bounce: 'ເດັ້ງ', slam: 'ກະແທກ', zoomIn: 'ຊູມເຂົ້າ', fade: 'ຄ່ອຍໆຂຶ້ນ', slideUp: 'ຂຶ້ນຈາກລຸ່ມ', slideDown: 'ລົງຈາກເທິງ', slideLeft: 'ເຂົ້າຈາກຂວາ', slideRight: 'ເຂົ້າຈາກຊ້າຍ', drop: 'ຕົກລົງ', flip: 'ພິກ', stretch: 'ຍືດ', swing: 'ແກວ່ງ', spin: 'ໝຸນ', blurIn: 'ມົວໄປຊັດ', wipe: 'ປາດເຂົ້າ', typewriter: 'ພິມດີດ', glitch: 'ກລິດຊ໌' , maskUp: 'ໂຜ່ຂຶ້ນຈາກເສັ້ນ', maskDown: 'ໂຜ່ລົງຈາກເສັ້ນ', tvOn: 'ເປີດທີວີ', jelly: 'ເຈລີ່', rollIn: 'ກິ້ງເຂົ້າ', zoomBlur: 'ຊູມມົວ', lightSpeed: 'ໄວປານແສງ', popRotate: 'ປັອບໝຸນ', flipX: 'ພິກຂ້າງ' };
+const LABEL_OUT = { none: 'ບໍ່ມີ', fade: 'ຄ່ອຍໆຫາຍ', popOut: 'ຫົດຫາຍ', zoomOut: 'ຊູມອອກ', slideUp: 'ຂຶ້ນເທິງ', slideDown: 'ລົງລຸ່ມ', blurOut: 'ມົວຫາຍ' , slideLeft: 'ອອກຊ້າຍ', slideRight: 'ອອກຂວາ', shrink: 'ຫົດຫາຍໄວ', spinOut: 'ໝຸນຫາຍ', dropOut: 'ຕົກລົງ', tvOff: 'ປິດທີວີ', maskDown: 'ຈົມລົງເສັ້ນ' };
+const LABEL_LOOP = { none: 'ບໍ່ມີ', float: 'ລອຍ', pulse: 'ເຕັ້ນ', shake: 'ສັ່ນ', wave: 'ຄື້ນ', swing: 'ໂຍກ', flicker: 'ກະພິບ', glitch: 'ກລິດຊ໌' , hop: 'ກະໂດດ', heartbeat: 'ຫົວໃຈເຕັ້ນ', jelly: 'ເຈລີ່', tilt: 'ອຽງໄປມາ', slowZoom: 'ຊູມຊ້າໆ', hopWords: 'ກະໂດດທີລະຄຳ' };
 
 const DECOR = [
   ['ຂະໜາດ ແລະ ຮູບແບບ', [

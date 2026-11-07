@@ -537,15 +537,22 @@
     const rect = host.getBoundingClientRect();
     const x = anchorX == null ? ui.clock * ui.pps - host.scrollLeft : anchorX - rect.left;
     const at = (host.scrollLeft + x) / ui.pps;
-    ui.pps = clamp(pps, 4, 400);
+    ui.pps = clamp(pps, ZOOM_MIN, ZOOM_MAX);
     render();
     host.scrollLeft = at * ui.pps - x;
+    syncZoomSlider();
   }
+  // The zoom slider works on a log scale, so each step feels the same from the whole video down to single frames.
+  const ZOOM_MIN = 4, ZOOM_MAX = 1200;
+  const zoomToSlider = pps => Math.round(1000 * Math.log(pps / ZOOM_MIN) / Math.log(ZOOM_MAX / ZOOM_MIN));
+  const sliderToZoom = v => ZOOM_MIN * Math.pow(ZOOM_MAX / ZOOM_MIN, v / 1000);
+  function syncZoomSlider() { const z = el('tlZoom'); if (z) z.value = zoomToSlider(ui.pps); }
   function fitZoom() {
     const host = el('tlTracks');
-    ui.pps = clamp((host.clientWidth - 30) / Math.max(1, total()), 4, 400);
+    ui.pps = clamp((host.clientWidth - 30) / Math.max(1, total()), ZOOM_MIN, ZOOM_MAX);
     render();
     host.scrollLeft = 0;
+    syncZoomSlider();
   }
 
   // ---- Snapping: edges stick to the playhead and to other items, as in an editor ----
@@ -980,7 +987,7 @@
     host.addEventListener('pointerup', lift, true);
     host.addEventListener('pointercancel', lift, true);
     host.addEventListener('wheel', e => {
-      if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(ui.pps * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey) { e.preventDefault(); setZoom(ui.pps * Math.pow(1.0015, -e.deltaY), e.clientX); return; }
       if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); host.scrollLeft += e.deltaY; }
     }, { passive: false });
     host.addEventListener('scroll', () => { el('tlHeads').scrollTop = host.scrollTop; });
@@ -1046,6 +1053,38 @@
     });
     return row;
   }
+  /** Where the selected captions sit on the picture. Only the selected ones move. */
+  function moveCaptionPlace(dx, dy, y) {
+    const caps = selectionList().filter(x => x.kind === 'cap' && !locked('cap')).map(x => x.item);
+    if (!caps.length) return;
+    for (const c of caps) {
+      const base = c.pos || S.pos;
+      const pos = { x: clamp(base.x + dx, 0.02, 0.98), y: clamp(y != null ? y : base.y + dy, 0.02, 0.98) };
+      c.words.forEach(w => delete w.pos);
+      c.words[0].pos = pos;
+    }
+    rebuild(); render(); renderInspector(); commit();
+  }
+  function unpinCaptions() {
+    selectionList().filter(x => x.kind === 'cap').forEach(({ item }) => item.words.forEach(w => delete w.pos));
+    rebuild(); render(); renderInspector(); commit();
+  }
+  function placeRows(caps) {
+    const box = document.createElement('div');
+    const h = document.createElement('div'); h.className = 'small muted'; h.style.marginTop = '8px';
+    h.textContent = `ບ່ອນວາງໃນຄິບ (${caps.length} ຟ້ອນທີ່ເລືອກ, ອັນອື່ນບໍ່ປ່ຽນ). ລາກຟ້ອນໃນຄິບກໍໄດ້.`;
+    const row = document.createElement('div'); row.className = 'row wrap';
+    [['⬆', 0, -0.02, 'ຂຶ້ນ (Alt+↑)'], ['⬇', 0, 0.02, 'ລົງ (Alt+↓)'], ['⬅', -0.02, 0, 'ຊ້າຍ'], ['➡', 0.02, 0, 'ຂວາ']].forEach(([l, dx, dy, title]) => {
+      const b = document.createElement('button'); b.textContent = l; b.title = title; b.onclick = () => moveCaptionPlace(dx, dy); row.appendChild(b);
+    });
+    [['ເທິງ', 0.21], ['ກາງ', 0.5], ['ລຸ່ມ', 0.7]].forEach(([l, y]) => {
+      const b = document.createElement('button'); b.className = 'grow'; b.textContent = l; b.onclick = () => moveCaptionPlace(0, 0, y); row.appendChild(b);
+    });
+    const un = document.createElement('button'); un.textContent = '📌✕'; un.title = 'ກັບໄປໃຊ້ບ່ອນວາງຫຼັກ'; un.onclick = unpinCaptions; un.disabled = !caps.some(c => c.pos);
+    row.appendChild(un);
+    box.append(h, row);
+    return box;
+  }
   function rippleBox() {
     const lab = document.createElement('label'); lab.className = 'check small'; lab.style.marginTop = '8px';
     const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'capRipple'; cb.checked = !!ui.capRipple;
@@ -1081,6 +1120,7 @@
       const h = document.createElement('h4'); h.textContent = `ເລືອກໄວ້ ${many.length} ອັນ${caps ? ` (ຟ້ອນ ${caps})` : ''}`; g.appendChild(h);
       const t = document.createElement('p'); t.className = 'small muted'; t.textContent = 'ລາກອັນໃດອັນໜຶ່ງ ທຸກອັນທີ່ເລືອກຈະຍ້າຍພ້ອມກັນ.'; g.appendChild(t);
       g.appendChild(nudgeRow());
+      if (caps) g.appendChild(placeRows(many.filter(x => x.kind === 'cap').map(x => x.item)));
       const row = document.createElement('div'); row.className = 'row wrap';
       if (caps > 1) { const m = document.createElement('button'); m.className = 'grow'; m.textContent = '⧉ ຮວມເປັນຟ້ອນດຽວ'; m.onclick = mergeCaptions; row.appendChild(m); }
       const d = document.createElement('button'); d.className = 'grow'; d.textContent = '🗑 ລົບທັງໝົດ'; d.onclick = removeSelected; row.appendChild(d);
@@ -1104,7 +1144,7 @@
       });
       g.appendChild(input);
       const t = document.createElement('p'); t.className = 'small muted'; t.textContent = `${sel.start.toFixed(2)} – ${sel.end.toFixed(2)} ວິ. ລາກເພື່ອຍ້າຍ, ລາກຂອບເຫຼືອງເພື່ອຍືດ-ຫົດ.`; g.appendChild(t);
-      g.append(nudgeRow(), rippleBox());
+      g.append(nudgeRow(), placeRows([sel]), rippleBox());
       const row = document.createElement('div'); row.className = 'row wrap';
       const cut = document.createElement('button'); cut.className = 'grow'; cut.textContent = '✂ ຕັດຟ້ອນຢູ່ເສັ້ນເວລາ'; cut.onclick = () => splitCaptionAt(sel, ui.clock - S.offset); row.appendChild(cut);
       const all = document.createElement('button'); all.className = 'grow'; all.textContent = 'ເລືອກທັງໝົດ'; all.onclick = selectAll; row.appendChild(all);
@@ -1190,7 +1230,7 @@
         <span id="tlCount" class="small"></span>
         <span class="grow"></span>
         <span id="tlTime" class="mono small muted"></span>
-        <button id="tlOut" title="ຍໍ່ (-)">−</button><button id="tlFit" title="ເຫັນທັງໝົດ">⤢</button><button id="tlIn" title="ຂະຫຍາຍ (+)">＋</button>
+        <button id="tlOut" title="ຍໍ່ (-)">−</button><input id="tlZoom" type="range" min="0" max="1000" title="ຊູມໄທມ໌ລາຍ (Ctrl ຫຼື Alt + ລໍ້ເມົາສ໌)"><button id="tlIn" title="ຂະຫຍາຍ (+)">＋</button><button id="tlFit" title="ເຫັນທັງໝົດ (Shift+Z)">⤢</button>
       </div>
       <div id="tlBody">
         <div id="tlHeads"></div>
@@ -1249,6 +1289,16 @@
     el('tlIn').onclick = () => setZoom(ui.pps * 1.5);
     el('tlOut').onclick = () => setZoom(ui.pps / 1.5);
     el('tlFit').onclick = fitZoom;
+    el('tlZoom').addEventListener('input', e => setZoom(sliderToZoom(Number(e.target.value))));
+    syncZoomSlider();
+    // On a computer the timeline runs the full width under the panels, as in CapCut; on a phone it stays under the clip.
+    const wide = matchMedia('(min-width: 1051px)');
+    const placeTimeline = () => {
+      const tl = el('tl'), want = wide.matches ? document.querySelector('main') : el('center');
+      if (tl.parentElement !== want) { want.appendChild(tl); render(); fitStage(); }
+    };
+    wide.addEventListener('change', placeTimeline);
+    placeTimeline();
     const inner = el('tlInner'), tracks = el('tlTracks');
     inner.addEventListener('pointerdown', e => { ui.lastPointer = e.pointerType; pointerDown(e); });
     inner.addEventListener('pointermove', pointerMove);
@@ -1279,7 +1329,9 @@
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
       const key = e.key.toLowerCase(), ctrl = e.ctrlKey || e.metaKey;
       const frame = e.shiftKey ? 1 : 1 / 30;
-      if (ctrl && key === 'a') { e.preventDefault(); selectAll(); }
+      if (ctrl && (key === '=' || key === '+')) { e.preventDefault(); setZoom(ui.pps * 1.25); }
+      else if (ctrl && key === '-') { e.preventDefault(); setZoom(ui.pps / 1.25); }
+      else if (ctrl && key === 'a') { e.preventDefault(); selectAll(); }
       else if (ctrl && key === 'd') { e.preventDefault(); duplicate(); }
       else if (ctrl && key === 'b') { e.preventDefault(); split(); }
       else if (ctrl) return;
@@ -1289,6 +1341,8 @@
       else if (key === 'n') { ui.snap = !ui.snap; render(); }
       else if (key === 'delete' || key === 'backspace') { e.preventDefault(); removeSelected(); }
       else if (key === 'escape') { clearSelection(); render(); renderInspector(); }
+      else if (e.altKey && (key === 'arrowup' || key === 'arrowdown')) { e.preventDefault(); moveCaptionPlace(0, (key === 'arrowup' ? -1 : 1) * (e.shiftKey ? 0.05 : 0.01)); }
+      else if (key === 'z' && e.shiftKey) fitZoom();
       else if (key === 'arrowleft') { e.preventDefault(); TL.seek(ui.clock - frame); drawPlayhead(ui.clock, total()); }
       else if (key === 'arrowright') { e.preventDefault(); TL.seek(ui.clock + frame); drawPlayhead(ui.clock, total()); }
       else if (key === 'home') TL.seek(0);
@@ -1484,5 +1538,6 @@
     relinkNotice,
     hasMissing: () => missingMedia().length > 0,
     capsHidden: () => T.tracks.caps.hide,
+    selectedCaptions: () => selectionList().filter(x => x.kind === 'cap' && !locked('cap')).map(x => x.item),
   };
 })();

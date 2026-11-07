@@ -184,6 +184,25 @@ body.static .webOnly { display: block; }
 .tlb.cap .h { width: 14px; border-radius: 3px; }
 .tlb.cap .h.l { left: -15px; } .tlb.cap .h.r { right: -15px; }
 body:not(.static) #tl { display: none; }
+#tlZoom { width: 110px; flex: none; margin: 0 2px; }
+
+/* Computers: player in the middle, panels on both sides, a full-width timeline underneath, as in CapCut. */
+@media (min-width: 1051px) {
+  :root { --bg: #0e0f11; --panel: #18191c; --panel2: #232428; --line: #2c2e33; }
+  main { grid-template-columns: 290px minmax(0, 1fr) 360px; grid-template-rows: minmax(0, 1fr) auto; grid-template-areas: "left center right" "tl tl tl"; }
+  #left { grid-area: left; } #center { grid-area: center; } #right { grid-area: right; }
+  main > #tl { grid-area: tl; border-radius: 0; border: 0; border-top: 1px solid var(--line); background: #141518; }
+  main > #tl #tlTracks, main > #tl #tlHeads { height: 230px; }
+  main > #tl .tlbar { padding: 4px 10px; background: #18191c; }
+  main > #tl .tlbar button { padding: 3px 9px; }
+  main > #tl #tlHeads { width: 110px; }
+  #center { background: #0b0c0e; padding: 10px 18px 8px; }
+  #stage { border-radius: 4px; }
+  .tlb.clip { background-color: #1f6f7e; }
+  .tlb.on { border-color: #22d3ee; }
+  .tlb.cap.on { background: #d42a35; border-color: #22d3ee; }
+  #tlHead { background: #fff; }
+}
 
 /* Phones and narrow windows: clip on top, one scrolling panel below. */
 @media (max-width: 1050px) {

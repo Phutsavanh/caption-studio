@@ -52,6 +52,17 @@
     wipe: p => ({ clip: easeOut(p) }),
     typewriter: p => ({ a: p > 0 ? 1 : 0 }),
     glitch: p => ({ a: quick(p, 5), jitter: (1 - p) * 34 }),
+    // Rises out of a line, as if from behind a mask.
+    maskUp: p => ({ mask: 1, dy: (1 - expoOut(p)) * 110 }),
+    maskDown: p => ({ mask: 1, dy: -(1 - expoOut(p)) * 110 }),
+    // An old TV switching on: a thin line opens out.
+    tvOn: p => (p < 0.5 ? { kx: lerp(0.04, 1, easeOut(p * 2)), ky: 0.05 } : { ky: lerp(0.05, 1, backOut((p - 0.5) * 2)) }),
+    jelly: p => { const w = Math.pow(1 - p, 2) * Math.cos(p * 18); return { a: quick(p, 6), kx: 1 + 0.45 * w, ky: 1 - 0.35 * w }; },
+    rollIn: p => ({ a: quick(p, 3), dx: -(1 - easeOut(p)) * 240, rot: -(1 - easeOut(p)) * 1.3 }),
+    zoomBlur: p => ({ a: p, k: lerp(1.9, 1, expoOut(p)), blur: (1 - p) * 20 }),
+    lightSpeed: p => ({ a: quick(p, 3), dx: (1 - expoOut(p)) * 320, kx: lerp(2.4, 1, expoOut(p)) }),
+    popRotate: p => ({ a: quick(p, 4), k: lerp(0.2, 1, backOut(p)), rot: (1 - backOut(p)) * 0.6 }),
+    flipX: p => ({ a: quick(p, 4), kx: backOut(p) }),
   };
   // Exit: q goes 0 -> 1
   const OUT = {
@@ -62,6 +73,13 @@
     slideUp: q => ({ a: 1 - q, dy: -q * 70 }),
     slideDown: q => ({ a: 1 - q, dy: q * 70 }),
     blurOut: q => ({ a: 1 - q, blur: q * 20 }),
+    slideLeft: q => ({ a: 1 - q, dx: -q * 180 }),
+    slideRight: q => ({ a: 1 - q, dx: q * 180 }),
+    shrink: q => ({ k: 1 - easeOut(q) * 0.98 }),
+    spinOut: q => ({ a: 1 - q, k: 1 - q * 0.7, rot: q * 1.4 }),
+    dropOut: q => ({ a: 1 - q * q, dy: q * q * 260, rot: q * 0.35 }),
+    tvOff: q => (q < 0.5 ? { ky: lerp(1, 0.05, easeOut(q * 2)) } : { ky: 0.05, kx: lerp(1, 0.02, easeOut((q - 0.5) * 2)) }),
+    maskDown: q => ({ mask: 1, dy: expoOut(q) * 110 }),
   };
   // Continuous: t = seconds since the caption appeared, i = token index, amt = strength
   const LOOP = {
@@ -73,10 +91,19 @@
     swing: (t, i, amt) => ({ rot: Math.sin(t * 4) * 0.035 * amt }),
     flicker: (t, i, amt) => { const f = Math.floor(t * 18); return { a: rnd(f) < 0.1 * amt ? 0.45 : 1 }; },
     glitch: (t, i, amt) => { const f = Math.floor(t * 12); return rnd(f) < 0.16 * amt ? { dx: (rnd(f + 7) - 0.5) * 26, rgb: 8 } : {}; },
+    hop: (t, i, amt) => ({ dy: -Math.abs(Math.sin(t * 5)) * 13 * amt }),
+    heartbeat: (t, i, amt) => { const ph = (t % 1.1) / 1.1; const beat = Math.exp(-Math.pow((ph - 0.08) * 22, 2)) + 0.7 * Math.exp(-Math.pow((ph - 0.3) * 22, 2)); return { k: 1 + beat * 0.09 * amt }; },
+    jelly: (t, i, amt) => ({ kx: 1 + Math.sin(t * 8) * 0.045 * amt, ky: 1 - Math.sin(t * 8) * 0.045 * amt }),
+    tilt: (t, i, amt) => ({ rot: Math.sin(t * 3) * 0.07 * amt }),
+    slowZoom: (t, i, amt) => ({ k: 1 + Math.min(t, 4) * 0.025 * amt }),
+    // Each word in turn jumps up.
+    hopWords: (t, i, amt) => ({ dy: -Math.max(0, Math.sin(t * 7 - i * 0.8)) * 16 * amt }),
   };
+  // Loops that move each word on its own rather than the whole caption.
+  const PER_WORD_LOOP = new Set(['wave', 'hopWords']);
 
   const merge = (...states) => {
-    const o = { a: 1, k: 1, kx: 1, ky: 1, dx: 0, dy: 0, rot: 0, blur: 0, clip: 1, jitter: 0, rgb: 0 };
+    const o = { a: 1, k: 1, kx: 1, ky: 1, dx: 0, dy: 0, rot: 0, blur: 0, clip: 1, jitter: 0, rgb: 0, mask: 0 };
     for (const s of states) {
       if (s.a != null) o.a *= s.a;
       if (s.k != null) o.k *= s.k;
@@ -89,6 +116,7 @@
       if (s.clip != null) o.clip *= s.clip;
       if (s.jitter) o.jitter += s.jitter;
       if (s.rgb) o.rgb += s.rgb;
+      if (s.mask) o.mask = 1;
     }
     return o;
   };
@@ -161,7 +189,7 @@
     const block = merge(
       tokenWise ? {} : inFn(clamp(local / inD)),
       outFn(q),
-      st.loop === 'wave' ? {} : loopFn(local, 0, st.loopAmt),
+      PER_WORD_LOOP.has(st.loop) ? {} : loopFn(local, 0, st.loopAmt),
       opts.ghost ? { a: 0.4 } : {},
     );
     const bx = pos.x * W, by = pos.y * H;
@@ -180,13 +208,15 @@
         else if (!tm.started && st.unit === 'word') hidden = true;
         else parts.push(inFn(tm.p));
       }
-      if (st.loop === 'wave') parts.push(loopFn(local, tk.i, st.loopAmt));
+      if (PER_WORD_LOOP.has(st.loop)) parts.push(loopFn(local, tk.i, st.loopAmt));
       if (tk.i === activeIdx && st.active === 'scale') parts.push({ k: 1.16 });
       return { tk, hidden, state: merge(...parts) };
     });
 
     const withBlock = fn => {
       ctx.save();
+      // A mask keeps the text inside its own lines while it slides in or out.
+      if (block.mask) { ctx.beginPath(); ctx.rect(ox - 60 * s, oy - 4 * s, L.blockW + 120 * s, L.blockH + 8 * s); ctx.clip(); }
       ctx.translate(bx + block.dx * s, by + block.dy * s);
       if (st.tilt) ctx.rotate(st.tilt * Math.PI / 180);
       if (block.rot) ctx.rotate(block.rot);
@@ -203,6 +233,7 @@
       const { tk, state } = entry, c = state;
       ctx.save();
       const cx = ox + tk.cx, cy = oy + tk.cy;
+      if (c.mask) { ctx.beginPath(); ctx.rect(ox + tk.x - 30 * s, oy + tk.line * L.lh - 4 * s, tk.width + 60 * s, L.lh + 8 * s); ctx.clip(); }
       let jx = 0, jy = 0;
       const jit = c.jitter + block.jitter;
       if (jit > 0.5) { const f = Math.floor(t * 30) + tk.i * 13; jx = (rnd(f) - 0.5) * jit * s; jy = (rnd(f + 5) - 0.5) * jit * s * 0.5; }
