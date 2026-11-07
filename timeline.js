@@ -144,15 +144,6 @@
   }
 
   // ---------- Drawing (shared by preview and export) ----------
-  function drawFit(ctx, img, iw, ih, W, H, c) {
-    const fitScale = c.fit === 'contain' ? Math.min(W / iw, H / ih) : Math.max(W / iw, H / ih);
-    const s = fitScale * (c.zoom || 1), dw = iw * s, dh = ih * s;
-    const dx = (W - dw) / 2 + (c.x || 0) * W, dy = (H - dh) / 2 + (c.y || 0) * H;
-    const custom = c.bright !== 1 || c.contrast !== 1 || c.sat !== 1;
-    if (custom) ctx.filter = `brightness(${c.bright}) contrast(${c.contrast}) saturate(${c.sat})`;
-    ctx.drawImage(img, dx, dy, dw, dh);
-    if (custom) ctx.filter = 'none';
-  }
   /** getSource(kind, item, sourceSeconds) -> { img, w, h } or null */
   function compose(ctx, W, H, t, lay, getSource) {
     ctx.save();
@@ -173,7 +164,7 @@
         else if (type === 'slideUp') ctx.translate(0, (1 - p) ** 2 * H);
         else if (type === 'zoom') { const k = 1.35 - 0.35 * p; ctx.globalAlpha = p; ctx.translate(W / 2, H / 2); ctx.scale(k, k); ctx.translate(-W / 2, -H / 2); }
       }
-      drawFit(ctx, s.img, s.w, s.h, W, H, it.clip);
+      window.VFX.drawItem(ctx, W, H, { kind: 'clip', item: it.clip, img: s.img, iw: s.w, ih: s.h, local: t - it.start });
       ctx.restore();
     }
     for (const o of T.tracks.overlay.hide ? [] : T.overlays) {
@@ -181,13 +172,10 @@
       const s = getSource('overlay', o, o.in + (t - o.start));
       if (!s) continue;
       const local = t - o.start;
-      let a = o.opacity;
+      let a = 1; // the overlay's own opacity can be keyframed, so VFX applies it
       if (o.fadeIn > 0) a *= clamp(local / o.fadeIn, 0, 1);
       if (o.fadeOut > 0) a *= clamp((o.dur - local) / o.fadeOut, 0, 1);
-      const dw = o.scale * W, dh = dw * s.h / s.w;
-      ctx.globalAlpha = a;
-      ctx.drawImage(s.img, o.x * W - dw / 2, o.y * H - dh / 2, dw, dh);
-      ctx.globalAlpha = 1;
+      window.VFX.drawItem(ctx, W, H, { kind: 'overlay', item: o, img: s.img, iw: s.w, ih: s.h, local, alpha: a });
     }
     ctx.restore();
   }
@@ -233,6 +221,12 @@
     const dt = (now - ui.lastNow) / 1000;
     ui.lastNow = now;
     const tot = total();
+    if (!ui.playing && Math.abs(ui.clock - (ui.inspectedAt ?? -1)) > 0.0005) {
+      // After a seek, keyframed values in the panel show the new moment.
+      ui.inspectedAt = ui.clock;
+      const s0 = selectedItem(), k0 = ui.selected && ui.selected.kind;
+      if (s0 && (k0 === 'clip' || k0 === 'overlay') && !document.activeElement?.closest?.('#tab-clip')) renderInspector();
+    }
     if (ui.playing) {
       const heard = soundClock();
       ui.clock = heard != null ? heard : ui.clock + Math.min(dt, 0.25);
@@ -433,6 +427,10 @@
     if (m && m.thumb && kind === 'overlay') b.style.backgroundImage = `url(${m.thumb})`;
     if (kind !== 'cap' && (!m || !m.file)) b.classList.add('missing');
     const name = document.createElement('span'); name.textContent = label; b.appendChild(name);
+    if ((kind === 'clip' || kind === 'overlay') && window.VFX.hasKeys(item)) {
+      for (const t of window.VFX.keyTimes(item)) { const d = document.createElement('b'); d.className = 'kfm'; d.style.left = `${t * ui.pps}px`; b.appendChild(d); }
+    }
+    if ((kind === 'clip' || kind === 'overlay') && ((item.fx && item.fx.length) || (item.mask && item.mask.type && item.mask.type !== 'none'))) b.classList.add('fxd');
     if (primary && !locked(kind)) {
       const l = document.createElement('i'); l.className = 'h l'; l.dataset.edge = 'l';
       const r = document.createElement('i'); r.className = 'h r'; r.dataset.edge = 'r';
@@ -587,6 +585,18 @@
     c.words[at - 1].glue = false;
     rebuild(); commit();
   }
+  /** A copy with its own keyframes, colour, mask and effects, so changing one never changes the other. */
+  const cloneLook = item => ({ ...item, ...JSON.parse(JSON.stringify({ kf: item.kf, grade: item.grade, mask: item.mask, fx: item.fx })) });
+  /** After a cut, each half keeps the keyframes on its own side, and the second half counts from its new start. */
+  function splitKeys(first, second, cut) {
+    for (const [prop, keys] of Object.entries(first.kf || {})) {
+      const v = window.VFX.value(first, prop, cut);
+      const a = keys.filter(k => k.t < cut), b = keys.filter(k => k.t > cut).map(k => ({ ...k, t: k.t - cut }));
+      if (keys.length) { a.push({ t: cut, v, e: 'ease' }); b.unshift({ t: 0, v, e: 'ease' }); }
+      first.kf[prop] = a;
+      second.kf[prop] = b;
+    }
+  }
   function split() {
     const lay = layout(), t = ui.clock, sel = selectedItem(), kind = ui.selected && ui.selected.kind;
     if (kind === 'cap' && sel) { splitCaptionAt(sel, t - S.offset); return; }
@@ -595,7 +605,7 @@
       return;
     }
     if (kind === 'overlay' && sel && t > sel.start && t < sel.start + sel.dur) {
-      edit(() => { const d = t - sel.start; const b = { ...sel, id: uid(), start: t, in: sel.in + d, dur: sel.dur - d }; sel.dur = d; T.overlays.push(b); }, { keepCaptions: true });
+      edit(() => { const d = t - sel.start; const b = { ...cloneLook(sel), id: uid(), start: t, in: sel.in + d, dur: sel.dur - d }; splitKeys(sel, b, d); sel.dur = d; T.overlays.push(b); }, { keepCaptions: true });
       return;
     }
     const it = lay.items.find(i => t > i.start + 0.03 && t < i.end - 0.03);
@@ -603,7 +613,9 @@
     if (locked('clip')) { setNotice('ແຖວວິດີໂອຖືກລັອກຢູ່'); return; }
     edit(() => {
       const at = it.clip.in + (t - it.start) * it.clip.speed;
-      const b = { ...it.clip, id: uid(), in: at, trans: 'none' };
+      const cut = t - it.start;
+      const b = { ...cloneLook(it.clip), id: uid(), in: at, trans: 'none' };
+      splitKeys(it.clip, b, cut);
       it.clip.out = at;
       T.clips.splice(T.clips.indexOf(it.clip) + 1, 0, b);
       clearSelection();
@@ -633,7 +645,7 @@
     edit(() => {
       clearSelection();
       for (const { kind, item } of list) {
-        const b = { ...item, id: uid() };
+        const b = { ...cloneLook(item), id: uid() };
         if (kind === 'clip') T.clips.splice(T.clips.indexOf(item) + 1, 0, b);
         else if (kind === 'overlay') { b.start = item.start + item.dur; T.overlays.push(b); } else { b.start = item.start + (item.out - item.in); T.audio.push(b); }
         addToSelection(kind, b);
@@ -1092,6 +1104,126 @@
     lab.append(cb, document.createTextNode(' ເລື່ອນຄຳທັງໝົດທີ່ຕາມຫຼັງໄປນຳ'));
     return lab;
   }
+  // ---- Keyframes, colour, mask and effects panels (clips and overlays) ----
+  function itemSpan(item) {
+    const it = layout().items.find(i => i.clip === item);
+    if (it) return { start: it.start, dur: it.end - it.start };
+    return { start: item.start || 0, dur: item.dur || 0 };
+  }
+  function keyframeRows(sel, kind, props) {
+    const V = window.VFX, span = itemSpan(sel), local = ui.clock - span.start, inside = local >= -0.001 && local <= span.dur + 0.001;
+    const at = clamp(local, 0, span.dur);
+    const rows = props.map(([prop, label, min, max, step]) => {
+      const row = document.createElement('div'); row.className = 'ctl kf';
+      const n = document.createElement('span'); n.textContent = label;
+      const i = document.createElement('input'); i.type = 'range'; i.min = min; i.max = max; i.step = step; i.value = V.value(sel, prop, at);
+      const o = document.createElement('output'); o.textContent = (+i.value).toFixed(step < 1 ? 2 : 0);
+      const has = !!(sel.kf && sel.kf[prop] && sel.kf[prop].length), here = inside && V.keyAt(sel, prop, local);
+      const d = document.createElement('button'); d.className = `kfbtn${here ? ' on' : has ? ' has' : ''}`; d.textContent = '◆';
+      d.title = here ? 'ລົບຄີເຟຣມຢູ່ເສັ້ນເວລານີ້' : 'ເພີ່ມຄີເຟຣມຢູ່ເສັ້ນເວລາ'; d.disabled = !inside;
+      // The playhead may have moved since the panel was drawn: always use where it is now.
+      const now = () => { const sp = itemSpan(sel); const l = ui.clock - sp.start; return { l, ok: l >= -0.001 && l <= sp.dur + 0.001 }; };
+      d.onclick = () => {
+        const { l, ok } = now();
+        if (!ok) return;
+        if (V.keyAt(sel, prop, l)) V.removeKey(sel, prop, l); else V.setKey(sel, prop, l, V.value(sel, prop, l));
+        render(); renderInspector(); commit();
+      };
+      i.addEventListener('input', () => {
+        const v = Number(i.value);
+        o.textContent = v.toFixed(step < 1 ? 2 : 0);
+        // Once a property has keyframes, changing it adds or updates one at the playhead, as in CapCut.
+        const { l, ok } = now();
+        if (has && ok) V.setKey(sel, prop, l, v); else sel[prop] = v;
+        commit();
+      });
+      i.addEventListener('change', () => { if (has) { render(); renderInspector(); } });
+      row.append(n, i, o, d);
+      return row;
+    });
+    const nav = document.createElement('div'); nav.className = 'row wrap';
+    const times = V.keyTimes(sel);
+    const go = t => { TL.seek(span.start + t + 0.0005); drawPlayhead(ui.clock, total()); renderInspector(); };
+    const prev = document.createElement('button'); prev.textContent = '⟨ ກ່ອນ'; prev.disabled = !times.some(t => t < local - 0.01);
+    prev.onclick = () => go([...times].reverse().find(t => t < local - 0.01));
+    const next = document.createElement('button'); next.textContent = 'ຖັດໄປ ⟩'; next.disabled = !times.some(t => t > local + 0.01);
+    next.onclick = () => go(times.find(t => t > local + 0.01));
+    const all = document.createElement('button'); all.className = 'grow'; all.textContent = '◆ ທຸກຄ່າຢູ່ນີ້'; all.disabled = !inside;
+    all.onclick = () => {
+      const sp = itemSpan(sel), l = ui.clock - sp.start;
+      if (l < -0.001 || l > sp.dur + 0.001) return;
+      props.forEach(([prop]) => V.setKey(sel, prop, l, V.value(sel, prop, l)));
+      render(); renderInspector(); commit();
+    };
+    const clear = document.createElement('button'); clear.textContent = '✕'; clear.title = 'ລົບຄີເຟຣມທັງໝົດ'; clear.disabled = !times.length;
+    clear.onclick = () => { props.forEach(([prop]) => { if (sel.kf && sel.kf[prop]) { sel[prop] = V.value(sel, prop, at); delete sel.kf[prop]; } }); render(); renderInspector(); commit(); };
+    nav.append(prev, all, next, clear);
+    const note = document.createElement('p'); note.className = 'small muted';
+    note.textContent = inside ? `ກົດ ◆ ເພື່ອໃສ່ຄີເຟຣມຢູ່ ${local.toFixed(2)} ວິ ຂອງອັນນີ້, ຍ້າຍເສັ້ນເວລາແລ້ວປ່ຽນຄ່າ ຈະເກີດການເຄື່ອນໄຫວລະຫວ່າງຄີເຟຣມ.` : 'ເລື່ອນເສັ້ນເວລາໃຫ້ຢູ່ເທິງອັນນີ້ກ່ອນ ຈຶ່ງໃສ່ຄີເຟຣມໄດ້.';
+    return [...rows, nav, note];
+  }
+  function lookGroups(host, sel) {
+    const V = window.VFX;
+    sel.grade = sel.grade || {};
+    const gr = sel.grade;
+    // Colour
+    const presets = document.createElement('div'); presets.className = 'animgrid';
+    for (const [name, f] of Object.entries(V.FILTERS)) {
+      const b = document.createElement('button'); b.textContent = f.l; b.classList.toggle('on', (gr.filter || 'none') === name);
+      b.onclick = () => { V.applyFilter(sel, name); commit(); renderInspector(); };
+      presets.appendChild(b);
+    }
+    const reset = document.createElement('button'); reset.className = 'wide'; reset.textContent = 'ຄືນຄ່າສີເດີມ';
+    reset.onclick = () => { V.applyFilter(sel, 'none'); commit(); renderInspector(); };
+    group(host, 'ແຕ່ງໂທນສີ', presets,
+      slider('ຄວາມສະຫວ່າງ', 0.3, 1.8, 0.01, () => sel.bright ?? 1, v => { sel.bright = v; }),
+      slider('ແສງ (EV)', -1.5, 1.5, 0.01, () => gr.exposure || 0, v => { gr.exposure = v; }),
+      slider('ຄວາມຄົມຊັດ', 0.3, 1.8, 0.01, () => sel.contrast ?? 1, v => { sel.contrast = v; }),
+      slider('ຄວາມສົດ', 0, 2, 0.01, () => sel.sat ?? 1, v => { sel.sat = v; }),
+      slider('ອຸນຫະພູມ', -1, 1, 0.01, () => gr.temp || 0, v => { gr.temp = v; }),
+      slider('ໂທນ ຂຽວ-ບົວ', -1, 1, 0.01, () => gr.tint || 0, v => { gr.tint = v; }),
+      slider('ປ່ຽນສີ', -180, 180, 1, () => gr.hue || 0, v => { gr.hue = v; }),
+      slider('ສີເກົ່າ', 0, 1, 0.01, () => gr.sepia || 0, v => { gr.sepia = v; }),
+      slider('ຊີດ', 0, 1, 0.01, () => gr.fade || 0, v => { gr.fade = v; }),
+      slider('ຂອບມືດ', 0, 1, 0.01, () => gr.vignette || 0, v => { gr.vignette = v; }),
+      slider('ເມັດຟິມ', 0, 1, 0.01, () => gr.grain || 0, v => { gr.grain = v; }),
+      reset);
+    // Mask
+    const m = sel.mask || { type: 'none' };
+    const shapes = document.createElement('div'); shapes.className = 'animgrid';
+    for (const [type, label] of Object.entries(V.MASKS)) {
+      const b = document.createElement('button'); b.textContent = label; b.classList.toggle('on', (m.type || 'none') === type);
+      b.onclick = () => {
+        sel.mask = type === 'none' ? { type: 'none' } : { x: 0, y: 0, w: 0.6, h: type === 'mirror' ? 0.35 : 0.6, rot: 0, feather: 0.15, round: 0.2, invert: false, ...(sel.mask || {}), type };
+        render(); commit(); renderInspector();
+      };
+      shapes.appendChild(b);
+    }
+    const maskRows = m.type && m.type !== 'none' ? [
+      slider('ຊ້າຍ-ຂວາ', -0.6, 0.6, 0.01, () => m.x || 0, v => { m.x = v; }),
+      slider('ເທິງ-ລຸ່ມ', -0.6, 0.6, 0.01, () => m.y || 0, v => { m.y = v; }),
+      ...(m.type === 'linear' ? [] : [slider('ກວ້າງ', 0.05, 1.6, 0.01, () => m.w ?? 0.6, v => { m.w = v; })]),
+      ...(m.type === 'linear' ? [] : [slider('ສູງ', 0.05, 1.6, 0.01, () => m.h ?? 0.6, v => { m.h = v; })]),
+      slider('ໝຸນ', -180, 180, 1, () => m.rot || 0, v => { m.rot = v; }),
+      slider('ຂອບນຸ້ມ', 0, 1, 0.01, () => m.feather || 0, v => { m.feather = v; }),
+      ...(m.type === 'rect' ? [slider('ມົນມຸມ', 0, 1, 0.01, () => m.round || 0, v => { m.round = v; })] : []),
+      choice('ດ້ານ', [[false, 'ເຫັນໃນ'], [true, 'ເຫັນນອກ']], () => !!m.invert, v => { m.invert = v; }),
+    ] : [];
+    group(host, 'ມາກ', shapes, ...maskRows);
+    // Effects
+    sel.fx = sel.fx || [];
+    const grid = document.createElement('div'); grid.className = 'animgrid';
+    for (const [type, label] of Object.entries(V.EFFECTS)) {
+      const on = sel.fx.some(f => f.type === type);
+      const b = document.createElement('button'); b.textContent = label; b.classList.toggle('on', on);
+      b.onclick = () => { if (on) sel.fx = sel.fx.filter(f => f.type !== type); else sel.fx.push({ type, amt: 0.6 }); render(); commit(); renderInspector(); };
+      grid.appendChild(b);
+    }
+    const fxRows = sel.fx.map(f => slider(`ແຮງ: ${V.EFFECTS[f.type] || f.type}`, 0, 1, 0.01, () => f.amt ?? 1, v => { f.amt = v; }));
+    const hint = document.createElement('p'); hint.className = 'small muted';
+    hint.textContent = 'ເອັບເຟັກມີຜົນຕະຫຼອດອັນນີ້. ຢາກໃຫ້ມີແຕ່ບາງຊ່ວງ: ຕັດອັນນີ້ກ່ອນ (S) ແລ້ວໃສ່ເອັບເຟັກໃນທ່ອນທີ່ຕ້ອງການ.';
+    group(host, 'ເອັບເຟັກ', grid, ...fxRows, hint);
+  }
   function renderInspector() {
     const host = el('tab-clip');
     if (!host) return;
@@ -1155,28 +1287,21 @@
         slider('ຄວາມໄວ', 0.25, 4, 0.05, () => sel.speed, v => { sel.speed = v; }, { structural: true }),
         choice('ສຽງຄິບ', [[false, 'ເປີດ'], [true, 'ປິດ']], () => sel.muted, v => { sel.muted = v; }),
         slider('ຄວາມດັງ', 0, 1, 0.05, () => sel.volume, v => { sel.volume = v; }));
-      group(host, 'ຄອບພາບ',
+      group(host, 'ຄອບພາບ ແລະ ຄີເຟຣມ',
         choice('ການວາງ', [['cover', 'ເຕັມຈໍ'], ['contain', 'ເຫັນຄົບ']], () => sel.fit, v => { sel.fit = v; }),
-        slider('ຊູມ', 1, 4, 0.01, () => sel.zoom, v => { sel.zoom = v; }),
-        slider('ຊ້າຍ-ຂວາ', -1, 1, 0.01, () => sel.x, v => { sel.x = v; }),
-        slider('ເທິງ-ລຸ່ມ', -1, 1, 0.01, () => sel.y, v => { sel.y = v; }));
-      group(host, 'ປັບສີ',
-        slider('ຄວາມສະຫວ່າງ', 0.3, 1.8, 0.01, () => sel.bright, v => { sel.bright = v; }),
-        slider('ຄວາມຄົມຊັດ', 0.3, 1.8, 0.01, () => sel.contrast, v => { sel.contrast = v; }),
-        slider('ຄວາມສົດ', 0, 2, 0.01, () => sel.sat, v => { sel.sat = v; }));
+        ...keyframeRows(sel, 'clip', [['zoom', 'ຊູມ', 0.3, 4, 0.01], ['x', 'ຊ້າຍ-ຂວາ', -1, 1, 0.01], ['y', 'ເທິງ-ລຸ່ມ', -1, 1, 0.01], ['rot', 'ໝຸນ', -180, 180, 1], ['opacity', 'ຄວາມທຶບ', 0, 1, 0.01]]));
+      lookGroups(host, sel);
       if (T.clips.indexOf(sel) > 0) {
         group(host, 'ທຣານຊິຊັນຈາກຄິບກ່ອນ',
           choice('ແບບ', [['none', 'ບໍ່ມີ'], ['fade', 'ຈາງ'], ['slide', 'ເລື່ອນຂ້າງ'], ['slideUp', 'ເລື່ອນຂຶ້ນ'], ['zoom', 'ຊູມ']], () => sel.trans, v => { sel.trans = v; }, { structural: true }),
           slider('ຍາວ (ວິ)', 0.1, 2, 0.05, () => sel.transDur, v => { sel.transDur = v; }, { structural: true }));
       }
     } else if (kind === 'overlay') {
-      group(host, 'ພາບຊ້ອນ',
-        slider('ຂະໜາດ', 0.05, 1, 0.01, () => sel.scale, v => { sel.scale = v; }),
-        slider('ຊ້າຍ-ຂວາ', 0, 1, 0.01, () => sel.x, v => { sel.x = v; }),
-        slider('ເທິງ-ລຸ່ມ', 0, 1, 0.01, () => sel.y, v => { sel.y = v; }),
-        slider('ຄວາມທຶບ', 0, 1, 0.01, () => sel.opacity, v => { sel.opacity = v; }),
+      group(host, 'ພາບຊ້ອນ ແລະ ຄີເຟຣມ',
+        ...keyframeRows(sel, 'overlay', [['scale', 'ຂະໜາດ', 0.05, 1.5, 0.01], ['x', 'ຊ້າຍ-ຂວາ', 0, 1, 0.01], ['y', 'ເທິງ-ລຸ່ມ', 0, 1, 0.01], ['rot', 'ໝຸນ', -180, 180, 1], ['opacity', 'ຄວາມທຶບ', 0, 1, 0.01]]),
         slider('ຄ່ອຍໆຂຶ້ນ', 0, 2, 0.05, () => sel.fadeIn, v => { sel.fadeIn = v; }),
         slider('ຄ່ອຍໆຫາຍ', 0, 2, 0.05, () => sel.fadeOut, v => { sel.fadeOut = v; }));
+      lookGroups(host, sel);
     } else {
       group(host, 'ສຽງ',
         choice('ປະເພດ', [['music', 'ເພງ'], ['voice', 'ສຽງພາກ']], () => sel.kind, v => { sel.kind = v; }),
@@ -1410,7 +1535,7 @@
     if (T.clips.length !== 1 || T.overlays.length || T.audio.length || T.tracks.video.mute) return null;
     const c = T.clips[0], m = media.get(c.m);
     const plain = m && m.kind === 'video' && c.in === 0 && Math.abs(c.out - m.duration) < 0.001 && c.speed === 1 && !c.muted && c.volume === 1 && c.zoom === 1 && !c.x && !c.y
-      && c.bright === 1 && c.contrast === 1 && c.sat === 1 && T.canvas.w === m.width - (m.width % 2) && T.canvas.h === m.height - (m.height % 2);
+      && c.bright === 1 && c.contrast === 1 && c.sat === 1 && window.VFX.isPlain(c) && T.canvas.w === m.width - (m.width % 2) && T.canvas.h === m.height - (m.height % 2);
     return plain ? m : null;
   }
   async function exportVideo(payload0, onProgress, isCancelled) {

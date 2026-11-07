@@ -185,6 +185,12 @@ body.static .webOnly { display: block; }
 .tlb.cap .h.l { left: -15px; } .tlb.cap .h.r { right: -15px; }
 body:not(.static) #tl { display: none; }
 #tlZoom { width: 110px; flex: none; margin: 0 2px; }
+.ctl.kf { grid-template-columns: 96px 1fr 44px 28px; }
+.kfbtn { padding: 0; width: 26px; height: 24px; font-size: 13px; color: #8a92a0; background: transparent; }
+.kfbtn.has { color: #e9c46a; }
+.kfbtn.on { color: #111; background: #ffd21e; border-color: #ffd21e; }
+.tlb .kfm { position: absolute; bottom: 2px; width: 8px; height: 8px; margin-left: -4px; background: #ffd21e; transform: rotate(45deg); border: 1px solid #000; z-index: 2; pointer-events: none; }
+.tlb.fxd::after { content: '✦'; position: absolute; right: 3px; bottom: 0; font-size: 11px; color: #7df9ff; pointer-events: none; }
 
 /* Computers: player in the middle, panels on both sides, a full-width timeline underneath, as in CapCut. */
 @media (min-width: 1051px) {
